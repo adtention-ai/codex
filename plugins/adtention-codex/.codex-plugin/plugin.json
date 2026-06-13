@@ -1,0 +1,31 @@
+{
+  "name": "adtention-codex",
+  "version": "0.1.0+codex.20260613204024",
+  "description": "ADtention hooks and terminal display for Codex sponsor messages.",
+  "author": {
+    "name": "ADtention"
+  },
+  "homepage": "https://adtention.ai",
+  "keywords": [
+    "adtention",
+    "ads",
+    "statusline",
+    "codex",
+    "developer-tools"
+  ],
+  "interface": {
+    "displayName": "ADtention for Codex",
+    "shortDescription": "Show sponsor messages in the Codex terminal title and prompt.",
+    "longDescription": "ADtention for Codex adds local lifecycle hooks, a fast Rust background client, and shell integration for the Codex app terminal. Sponsor messages are cached locally and rendered in the terminal title and prompt. Billable serving is blocked unless both a render heartbeat and a separate OS viewability heartbeat are fresh.",
+    "developerName": "ADtention",
+    "category": "Developer Tools",
+    "capabilities": [
+      "Interactive"
+    ],
+    "websiteURL": "https://adtention.ai",
+    "defaultPrompt": [
+      "Check my ADtention Codex cache status."
+    ],
+    "brandColor": "#0F766E"
+  }
+}

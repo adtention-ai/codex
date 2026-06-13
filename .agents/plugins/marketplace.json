@@ -1,0 +1,20 @@
+{
+  "name": "adtention-local",
+  "interface": {
+    "displayName": "ADtention Local"
+  },
+  "plugins": [
+    {
+      "name": "adtention-codex",
+      "source": {
+        "source": "local",
+        "path": "./plugins/adtention-codex"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Developer Tools"
+    }
+  ]
+}
