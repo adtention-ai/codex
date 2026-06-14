@@ -97,6 +97,23 @@ docker run --rm --platform linux/amd64 \
       cargo zigbuild --release --locked $strip_config \
         --manifest-path "$PLUGIN_DIR/client/Cargo.toml" --target "$target" >/dev/null
       cp "$PLUGIN_DIR/client/target/$target/release/adtention-codex$exe" "$bin/$asset$exe"
+      if [ "$exe" = ".exe" ]; then
+        python3 - "$bin/$asset$exe" <<'PY'
+import struct
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+data = bytearray(path.read_bytes())
+if data[:2] != b"MZ":
+    raise SystemExit(f"{path} is not a PE executable")
+pe_offset = struct.unpack_from("<I", data, 0x3C)[0]
+if data[pe_offset:pe_offset + 4] != b"PE\0\0":
+    raise SystemExit(f"{path} has no PE header")
+struct.pack_into("<I", data, pe_offset + 8, 0)
+path.write_bytes(data)
+PY
+      fi
       chmod +x "$bin/$asset$exe" 2>/dev/null || true
       echo "  built $asset$exe"
     }
