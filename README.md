@@ -1,172 +1,192 @@
 # ADtention for Codex
 
-Codex client for the ADtention prompt-based sponsor system.
+**Sponsor text in the Codex terminal, with viewability-gated billing.**
 
-The Claude version uses two Claude-specific features: a prompt hook for impressions and a custom shell-command status line for display. Codex currently matches the first part but not the second:
+ADtention for Claude Code gets a true status line because Claude exposes one.
+Codex does not currently expose a custom statusline slot, so this client uses
+the next best supported surface: the Codex app or CLI terminal.
 
-- Codex has `SessionStart` and `UserPromptSubmit` hooks, so ADtention can refresh sponsor state on real user prompts.
-- Codex does not currently expose a custom footer/statusline command slot. Its footer accepts built-in item IDs only, such as model, context, branch, and token items.
-
-So this plugin implements the native Codex hook side and ships a terminal integration that shows ADtention in the Codex app terminal without forcing tmux, zellij, or a special terminal.
-
-The display model is:
-
-- persistent surface: terminal title/tab text
-- readable surface: one sponsor line above the shell prompt
-- render signal: terminal integration writes `last_render_seen`
-- viewability signal: an OS-specific helper writes `last_viewable_seen` plus `viewability.json`
-- billing gate: `/v1/serve` is only called after both signals are fresh
-
-That last point matters. Terminal rendering alone is not treated as billable. Fetching and billing are intentionally blocked until a future macOS/Windows/Linux helper verifies likely window viewability.
-
-## Layout
+It shows:
 
 ```text
-.agents/plugins/marketplace.json
-plugins/adtention-codex/
-  .codex-plugin/plugin.json
-  hooks/hooks.json
-  client/
-  bin/adtention-codex
-  scripts/setup.sh
-  scripts/on-prompt.sh
-  scripts/refresh.sh
-  scripts/statusline.sh
-  scripts/shell-integration.sh
-  scripts/install-shell-integration.sh
-  scripts/uninstall-shell-integration.sh
-  scripts/build-client.sh
-  scripts/diagnose.sh
+⊕ $0.42  Alchemy: APIs for every chain -> alchemy.com
 ```
 
-## Build the Fast Client
+The terminal title/tab stays updated while you work, and the readable sponsor
+line appears above the prompt. No popups. No forced tmux. No special terminal.
 
-The prompt path is shell builtins only. The background client is Rust.
+---
+
+## "Wait. An ad plugin reading my code?"
+
+Good instinct. The client is built so your code does not need to leave your
+machine.
+
+When you submit a prompt, a Codex hook classifies your work locally into one of
+six broad buckets:
+
+`web3` · `web` · `devops` · `data` · `systems` · `general`
+
+The server receives that bucket, an anonymous install ID, and a nonce. It does
+not receive your source code.
+
+| Leaves your machine | Never leaves your machine |
+|---|---|
+| One bucket word, such as `web` | Your code or file contents |
+| Anonymous publisher/install ID | Your prompts or Codex replies |
+| Impression nonce | File names, paths, or repo names |
+| Viewability metadata | Anything identifying your project |
+
+The visible terminal path makes no network calls. It only reads cache files.
+The network path runs in the background from Codex hooks.
+
+---
+
+## Install
+
+macOS/Linux:
 
 ```sh
-/Users/JulianPechler/CODE/adtention-codex/plugins/adtention-codex/scripts/build-client.sh
+curl -fsSL https://raw.githubusercontent.com/adtention-ai/codex/main/install.sh | bash
 ```
 
-This builds:
+Windows PowerShell:
 
-```text
-/Users/JulianPechler/CODE/adtention-codex/plugins/adtention-codex/bin/adtention-codex
+```powershell
+irm https://raw.githubusercontent.com/adtention-ai/codex/main/install.ps1 | iex
 ```
 
-## Install Locally
-
-From this repo:
+Local development:
 
 ```sh
-/Applications/Codex.app/Contents/Resources/codex plugin marketplace add /Users/JulianPechler/CODE/adtention-codex
-/Applications/Codex.app/Contents/Resources/codex plugin add adtention-codex@adtention-local
+./install.sh
 ```
 
-Then start a new Codex CLI or Codex app thread and review/trust the hook with `/hooks` if prompted.
+The installer does all of this:
 
-The global `codex` npm shim on this machine currently points to a missing binary, so the commands above use the Codex app-bundled CLI.
+- copies the client to a stable location under `~/.codex/adtention-codex`
+- builds the Rust binary if a valid binary is not already present
+- installs the Codex plugin from the local marketplace
+- installs shell terminal integration
+- installs and starts the OS viewability helper
 
-## Display in the Codex App Terminal
+Codex may still ask you to review and trust plugin hooks with `/hooks`. That is
+a Codex safety step, not an ADtention prompt.
 
-Install the shell integration:
+---
 
-```sh
-/Users/JulianPechler/CODE/adtention-codex/plugins/adtention-codex/scripts/install-shell-integration.sh
-```
+## What You Get
 
-Open a new terminal tab after installing.
+- **Persistent terminal title/tab text** while commands run.
+- **Readable sponsor line above the prompt** when the terminal is ready.
+- **No terminal lock-in**: works through shell integration, not tmux/zellij.
+- **Fast prompt path**: shell builtins read one tiny cache file.
+- **Viewability-gated billing**: render-only traffic is non-billable.
+- **One install command** for plugin, shell integration, and helper.
 
-What it does:
+---
 
-- updates the terminal title/tab from `terminal.txt`
-- prints the readable sponsor line above the prompt
-- starts the Rust title daemon when available, so the title stays fresh while commands run
-- writes `last_render_seen`
+## How Money Works
 
-Rendering alone does **not** allow `/v1/serve`. A separate viewability helper must also write `last_viewable_seen`. Until such a helper is installed, the terminal integration can show cached/preview text but will not generate billable serves.
+ADtention only allows `/v1/serve` when all of these are true:
 
-Manual helper command for tests or a future OS helper:
+1. A real Codex prompt hook runs.
+2. The terminal renderer recently wrote `last_render_seen`.
+3. The OS helper recently wrote `last_viewable_seen`.
+4. The minimum dwell window has elapsed.
 
-```sh
-/Users/JulianPechler/CODE/adtention-codex/plugins/adtention-codex/bin/adtention-codex mark-viewable verified-macos-helper
-```
+An idle terminal earns nothing. A background render-only terminal earns nothing.
+Unsupported/unverified platforms can show cached preview text but do not create
+billable serves.
 
-Uninstall:
+---
 
-```sh
-/Users/JulianPechler/CODE/adtention-codex/plugins/adtention-codex/scripts/uninstall-shell-integration.sh
-```
+## How It Works Under the Hood
 
-You can also render the cached line manually:
+Three parts are deliberately separate:
 
-```sh
-/Users/JulianPechler/CODE/adtention-codex/plugins/adtention-codex/scripts/statusline.sh
-```
+- **Terminal renderer**: updates the title/tab and prompt line from local cache.
+  It writes `last_render_seen` and never calls the network.
+- **OS viewability helper**: checks whether Codex is likely frontmost and
+  visible. Only verified checks write `last_viewable_seen`; failed checks clear
+  it immediately.
+- **Codex prompt hook**: classifies the prompt locally, checks both heartbeats,
+  calls `/v1/serve`, and updates the cache.
 
-Renderers never call the network. They only read cache files written by the background refresh path.
+Current helper behavior:
 
-## Privacy Model
+- macOS: checks the frontmost app and visible window rectangle through the
+  system scripting interface. You may need to allow Accessibility/Automation
+  permission in System Settings.
+- Windows: checks foreground process/window state and window rectangle through
+  PowerShell/Win32 APIs.
+- Linux X11: checks the active window and screen intersection through `xdotool`
+  when available.
+- Linux Wayland: treated as unavailable by default because global window
+  inspection is intentionally restricted.
 
-The hook reads local signals only:
+This is fraud resistance, not impossible-to-cheat proof. Server-side fraud
+scoring, payout review, and caps still matter.
 
-- project folder markers, such as `package.json`, `Dockerfile`, `go.mod`, or `foundry.toml`
-- recent local transcript text, when Codex provides a transcript path
-- current hook JSON, only in memory, to classify the prompt text if Codex includes it
-
-Only these values are sent to ADtention:
-
-- anonymous publisher ID
-- one broad category: `web3`, `web`, `devops`, `data`, `systems`, or `general`
-- nonce for impression deduplication
-
-Code, file contents, file names, repo names, prompts, and replies are not sent.
+---
 
 ## Runtime State
 
-By default the plugin writes state to Codex plugin data when `PLUGIN_DATA` is provided, otherwise:
+All components use the same cache by default:
 
 ```text
 ~/.codex/adtention/
 ```
 
-Override with:
+Override it with:
 
 ```sh
 export ADTENTION_CACHE=/some/other/cache
-export ADTENTION_API=https://api.adtention.ai
 ```
 
-Useful diagnostics:
+The installed client lives at:
 
-```sh
-/Users/JulianPechler/CODE/adtention-codex/plugins/adtention-codex/scripts/diagnose.sh
+```text
+~/.codex/adtention-codex/
 ```
 
-## Tests
+---
+
+## Developer Commands
+
+Build the Rust client:
 
 ```sh
-cd /Users/JulianPechler/CODE/adtention-codex/plugins/adtention-codex/client
+plugins/adtention-codex/scripts/build-client.sh
+```
+
+Run diagnostics:
+
+```sh
+plugins/adtention-codex/scripts/diagnose.sh
+```
+
+Run tests:
+
+```sh
+cd plugins/adtention-codex/client
 cargo test
 
-cd /Users/JulianPechler/CODE/adtention-codex
+cd ../../..
 bash plugins/adtention-codex/tests/shell_integration_test.sh
+bash plugins/adtention-codex/tests/install_test.sh
 ```
 
-The Rust tests cover:
+---
 
-- terminal-control stripping
-- title/prompt rendering
-- separate render and viewability heartbeat freshness
-- serve gating that blocks render-only traffic
-- register/serve cache writes with a mocked backend
+## Uninstall
 
-The shell tests cover:
+Shell integration can be removed with:
 
-- prompt function heartbeat behavior
-- idempotent installer writes for `.zshrc` and `.bashrc`
+```sh
+plugins/adtention-codex/scripts/uninstall-shell-integration.sh
+```
 
-## Current Codex App Support
-
-The Codex app uses the same Codex configuration, plugin, and hook system as the CLI. That means the impression refresh path should work in app threads after the plugin is installed and trusted.
-
-The app UI also does not expose a supported custom persistent ad/statusline slot today. Until it does, the app terminal title/tab is the persistent surface and the prompt line is the readable surface.
+Full uninstall support for plugin + helper services is planned next. For now,
+remove the Codex plugin from the Codex plugin browser or CLI and remove the
+viewability service from your OS startup mechanism.

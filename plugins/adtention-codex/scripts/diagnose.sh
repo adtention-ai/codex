@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -u
 
-cache_dir="${ADTENTION_CACHE:-${PLUGIN_DATA:-$HOME/.codex/adtention}}"
+cache_dir="${ADTENTION_CACHE:-$HOME/.codex/adtention}"
 root="${PLUGIN_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")/.." && pwd)}"
 
 printf 'cache: %s\n' "$cache_dir"

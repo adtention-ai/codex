@@ -9,6 +9,22 @@ pub struct RenderedAd {
     pub prompt_line: String,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct ViewabilitySample {
+    pub target_app: String,
+    pub foreground_app: Option<String>,
+    pub window_visible: bool,
+    pub not_minimized: bool,
+    pub visible_ratio: f64,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum ViewabilityDecision {
+    Verified { source: String, visible_ratio: f64 },
+    Unverified { source: String, reason: String },
+    Unavailable { source: String, reason: String },
+}
+
 pub trait HttpClient {
     fn post(&self, url: &str, body: Option<&str>) -> Result<String, String>;
 }
@@ -90,11 +106,10 @@ pub fn render_ad(
 }
 
 pub fn mark_render_seen(cache_dir: &Path, now: SystemTime) -> std::io::Result<()> {
-    let _ = now;
     fs::create_dir_all(cache_dir)?;
     fs::write(
         cache_dir.join("last_render_seen"),
-        unix_secs(SystemTime::now()).to_string(),
+        unix_secs(now).to_string(),
     )
 }
 
@@ -113,6 +128,130 @@ pub fn mark_viewable_seen(cache_dir: &Path, source: &str, now: SystemTime) -> st
         })
         .to_string(),
     )
+}
+
+pub fn write_viewability_decision(
+    cache_dir: &Path,
+    decision: &ViewabilityDecision,
+    now: SystemTime,
+) -> std::io::Result<bool> {
+    match decision {
+        ViewabilityDecision::Verified {
+            source,
+            visible_ratio,
+        } => {
+            fs::create_dir_all(cache_dir)?;
+            fs::write(
+                cache_dir.join("last_viewable_seen"),
+                unix_secs(now).to_string(),
+            )?;
+            fs::write(
+                cache_dir.join("viewability.json"),
+                json!({
+                    "source": strip_terminal_controls(source),
+                    "verified_at": unix_secs(now),
+                    "state": "verified",
+                    "visible_ratio": visible_ratio
+                })
+                .to_string(),
+            )?;
+            Ok(true)
+        }
+        ViewabilityDecision::Unverified { source, reason }
+        | ViewabilityDecision::Unavailable { source, reason } => {
+            fs::create_dir_all(cache_dir)?;
+            match fs::remove_file(cache_dir.join("last_viewable_seen")) {
+                Ok(()) => {}
+                Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+                Err(err) => return Err(err),
+            }
+            fs::write(
+                cache_dir.join("viewability.json"),
+                json!({
+                    "source": strip_terminal_controls(source),
+                    "checked_at": unix_secs(now),
+                    "state": match decision {
+                        ViewabilityDecision::Unverified { .. } => "unverified",
+                        _ => "unavailable",
+                    },
+                    "reason": strip_terminal_controls(reason)
+                })
+                .to_string(),
+            )?;
+            Ok(false)
+        }
+    }
+}
+
+pub fn evaluate_viewability(
+    sample: &ViewabilitySample,
+    source: &str,
+    min_visible_ratio: f64,
+) -> ViewabilityDecision {
+    let normalized_target = sample.target_app.to_lowercase();
+    let foreground = sample
+        .foreground_app
+        .as_deref()
+        .unwrap_or("")
+        .to_lowercase();
+    if foreground.is_empty() {
+        return ViewabilityDecision::Unavailable {
+            source: source.to_string(),
+            reason: "foreground_app_unknown".to_string(),
+        };
+    }
+    if !foreground.contains(&normalized_target) {
+        return ViewabilityDecision::Unverified {
+            source: source.to_string(),
+            reason: "target_not_foreground".to_string(),
+        };
+    }
+    if !sample.window_visible {
+        return ViewabilityDecision::Unverified {
+            source: source.to_string(),
+            reason: "window_not_visible".to_string(),
+        };
+    }
+    if !sample.not_minimized {
+        return ViewabilityDecision::Unverified {
+            source: source.to_string(),
+            reason: "window_minimized".to_string(),
+        };
+    }
+    if sample.visible_ratio < min_visible_ratio {
+        return ViewabilityDecision::Unverified {
+            source: source.to_string(),
+            reason: "visible_ratio_below_threshold".to_string(),
+        };
+    }
+    ViewabilityDecision::Verified {
+        source: source.to_string(),
+        visible_ratio: sample.visible_ratio,
+    }
+}
+
+pub fn visible_ratio_for_rect(
+    window_x: f64,
+    window_y: f64,
+    window_width: f64,
+    window_height: f64,
+    screen_x: f64,
+    screen_y: f64,
+    screen_width: f64,
+    screen_height: f64,
+) -> f64 {
+    if window_width <= 0.0 || window_height <= 0.0 || screen_width <= 0.0 || screen_height <= 0.0 {
+        return 0.0;
+    }
+
+    let window_right = window_x + window_width;
+    let window_bottom = window_y + window_height;
+    let screen_right = screen_x + screen_width;
+    let screen_bottom = screen_y + screen_height;
+    let visible_width = (window_right.min(screen_right) - window_x.max(screen_x)).max(0.0);
+    let visible_height = (window_bottom.min(screen_bottom) - window_y.max(screen_y)).max(0.0);
+    let ratio = (visible_width * visible_height) / (window_width * window_height);
+    ratio.clamp(0.0, 1.0)
 }
 
 pub fn mark_display_seen(cache_dir: &Path, now: SystemTime) -> std::io::Result<()> {
@@ -642,6 +781,19 @@ mod tests {
     }
 
     #[test]
+    fn render_heartbeat_records_supplied_time() {
+        let tmp = temp_dir();
+        let now = UNIX_EPOCH + Duration::from_secs(1_234);
+
+        mark_render_seen(&tmp, now).unwrap();
+
+        assert_eq!(
+            fs::read_to_string(tmp.join("last_render_seen")).unwrap(),
+            "1234"
+        );
+    }
+
+    #[test]
     fn serve_is_blocked_without_fresh_viewability() {
         let tmp = temp_dir();
         let now = UNIX_EPOCH + Duration::from_secs(1_000);
@@ -673,6 +825,109 @@ mod tests {
         fs::write(tmp.join("last_serve"), now_secs.to_string()).unwrap();
 
         assert!(!should_attempt_serve(&tmp, SystemTime::now(), 120, 120, 15));
+    }
+
+    #[test]
+    fn viewability_evaluation_requires_foreground_visible_window() {
+        let sample = ViewabilitySample {
+            target_app: "Codex".to_string(),
+            foreground_app: Some("Codex".to_string()),
+            window_visible: true,
+            not_minimized: true,
+            visible_ratio: 0.81,
+        };
+
+        assert_eq!(
+            evaluate_viewability(&sample, "test-helper", 0.5),
+            ViewabilityDecision::Verified {
+                source: "test-helper".to_string(),
+                visible_ratio: 0.81
+            }
+        );
+
+        let wrong_app = ViewabilitySample {
+            foreground_app: Some("Safari".to_string()),
+            ..sample.clone()
+        };
+        assert!(matches!(
+            evaluate_viewability(&wrong_app, "test-helper", 0.5),
+            ViewabilityDecision::Unverified { reason, .. } if reason == "target_not_foreground"
+        ));
+
+        let hidden = ViewabilitySample {
+            window_visible: false,
+            ..sample.clone()
+        };
+        assert!(matches!(
+            evaluate_viewability(&hidden, "test-helper", 0.5),
+            ViewabilityDecision::Unverified { reason, .. } if reason == "window_not_visible"
+        ));
+
+        let too_small = ViewabilitySample {
+            visible_ratio: 0.12,
+            ..sample
+        };
+        assert!(matches!(
+            evaluate_viewability(&too_small, "test-helper", 0.5),
+            ViewabilityDecision::Unverified { reason, .. } if reason == "visible_ratio_below_threshold"
+        ));
+    }
+
+    #[test]
+    fn visible_ratio_uses_window_screen_intersection() {
+        assert_eq!(
+            visible_ratio_for_rect(0.0, 0.0, 100.0, 100.0, 0.0, 0.0, 200.0, 200.0),
+            1.0
+        );
+        assert_eq!(
+            visible_ratio_for_rect(50.0, 0.0, 100.0, 100.0, 0.0, 0.0, 100.0, 100.0),
+            0.5
+        );
+        assert_eq!(
+            visible_ratio_for_rect(200.0, 200.0, 100.0, 100.0, 0.0, 0.0, 100.0, 100.0),
+            0.0
+        );
+    }
+
+    #[test]
+    fn only_verified_viewability_writes_billable_heartbeat() {
+        let tmp = temp_dir();
+        let now = SystemTime::now();
+        let unavailable = ViewabilityDecision::Unavailable {
+            source: "test-helper".to_string(),
+            reason: "unsupported_session".to_string(),
+        };
+        assert!(!write_viewability_decision(&tmp, &unavailable, now).unwrap());
+        assert!(!tmp.join("last_viewable_seen").exists());
+
+        let verified = ViewabilityDecision::Verified {
+            source: "test-helper".to_string(),
+            visible_ratio: 0.7,
+        };
+        assert!(write_viewability_decision(&tmp, &verified, now).unwrap());
+        assert!(tmp.join("last_viewable_seen").exists());
+        let body = fs::read_to_string(tmp.join("viewability.json")).unwrap();
+        assert!(body.contains(r#""state":"verified""#));
+        assert!(body.contains(r#""visible_ratio":0.7"#));
+    }
+
+    #[test]
+    fn failed_viewability_check_clears_previous_billable_heartbeat() {
+        let tmp = temp_dir();
+        let now = SystemTime::now();
+        mark_viewable_seen(&tmp, "test-helper", now).unwrap();
+        assert!(viewable_is_fresh(&tmp, SystemTime::now(), 120));
+
+        let unverified = ViewabilityDecision::Unverified {
+            source: "test-helper".to_string(),
+            reason: "target_not_foreground".to_string(),
+        };
+        assert!(!write_viewability_decision(&tmp, &unverified, SystemTime::now()).unwrap());
+
+        assert!(!tmp.join("last_viewable_seen").exists());
+        assert!(!viewable_is_fresh(&tmp, SystemTime::now(), 120));
+        let body = fs::read_to_string(tmp.join("viewability.json")).unwrap();
+        assert!(body.contains(r#""state":"unverified""#));
     }
 
     struct MockHttp {
@@ -731,6 +986,27 @@ mod tests {
     fn refresh_skips_all_backend_calls_without_viewability_heartbeat() {
         let tmp = temp_dir();
         mark_render_seen(&tmp, SystemTime::now()).unwrap();
+        let http = MockHttp::new(vec![]);
+        let outcome = refresh_once(&refresh_config(tmp), &http);
+
+        assert_eq!(outcome, RefreshOutcome::SkippedNoViewability);
+        assert!(http.calls().is_empty());
+    }
+
+    #[test]
+    fn refresh_skips_backend_calls_after_viewability_becomes_unverified() {
+        let tmp = temp_dir();
+        mark_render_seen(&tmp, SystemTime::now()).unwrap();
+        mark_viewable_seen(&tmp, "test-helper", SystemTime::now()).unwrap();
+        write_viewability_decision(
+            &tmp,
+            &ViewabilityDecision::Unverified {
+                source: "test-helper".to_string(),
+                reason: "target_not_foreground".to_string(),
+            },
+            SystemTime::now(),
+        )
+        .unwrap();
         let http = MockHttp::new(vec![]);
         let outcome = refresh_once(&refresh_config(tmp), &http);
 

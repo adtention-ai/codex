@@ -2,6 +2,7 @@
 set -euo pipefail
 
 root="${ADTENTION_PLUGIN_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
+cache="${ADTENTION_CACHE:-$HOME/.codex/adtention}"
 start_marker="# >>> ADtention Codex >>>"
 end_marker="# <<< ADtention Codex <<<"
 
@@ -22,6 +23,7 @@ install_one() {
     cat "$tmp"
     printf '\n%s\n' "$start_marker"
     printf 'export ADTENTION_PLUGIN_ROOT=%q\n' "$root"
+    printf 'export ADTENTION_CACHE=%q\n' "$cache"
     printf '[ -r "$ADTENTION_PLUGIN_ROOT/scripts/shell-integration.sh" ] && . "$ADTENTION_PLUGIN_ROOT/scripts/shell-integration.sh"\n'
     printf '%s\n' "$end_marker"
   } > "$rc"
@@ -32,4 +34,3 @@ install_one "$HOME/.zshrc"
 install_one "$HOME/.bashrc"
 
 printf 'Installed ADtention shell integration in %s and %s\n' "$HOME/.zshrc" "$HOME/.bashrc"
-

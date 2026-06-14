@@ -2,7 +2,7 @@
 # ADtention for Codex: cache-only renderer for external status bars.
 set -u
 
-cache_dir="${ADTENTION_CACHE:-${PLUGIN_DATA:-$HOME/.codex/adtention}}"
+cache_dir="${ADTENTION_CACHE:-$HOME/.codex/adtention}"
 balance=$(cat "$cache_dir/balance_display" 2>/dev/null || true)
 ad=$(cat "$cache_dir/current_ad.txt" 2>/dev/null || true)
 mkdir -p "$cache_dir" 2>/dev/null || true

@@ -2,7 +2,7 @@
 # ADtention for Codex: background refresh. This is the only path that calls the API.
 set -uo pipefail
 
-cache_dir="${ADTENTION_CACHE:-${PLUGIN_DATA:-$HOME/.codex/adtention}}"
+cache_dir="${ADTENTION_CACHE:-$HOME/.codex/adtention}"
 api="${ADTENTION_API:-https://api.adtention.ai}"
 mkdir -p "$cache_dir" 2>/dev/null || exit 0
 

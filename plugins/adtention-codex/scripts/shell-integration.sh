@@ -11,7 +11,7 @@ fi
 
 __adtention_codex_prompt() {
   local cache title line
-  cache="${ADTENTION_CACHE:-${PLUGIN_DATA:-$HOME/.codex/adtention}}"
+  cache="${ADTENTION_CACHE:-$HOME/.codex/adtention}"
 
   if [ -r "$cache/terminal.txt" ]; then
     {
@@ -33,9 +33,7 @@ __adtention_codex_prompt() {
 
   if [ -n "$title" ]; then
     printf '\033]0;%s\007' "$title"
-    if [ -z "${ADTENTION_CODEX_TITLE_DAEMON_STARTED:-}" ]; then
-      : > "$cache/last_render_seen" 2>/dev/null || true
-    fi
+    : > "$cache/last_render_seen" 2>/dev/null || true
   fi
 
   if [ "${ADTENTION_PROMPT_LINE:-1}" != "0" ] && [ -n "$line" ]; then

@@ -27,6 +27,21 @@ test_prompt_function_marks_display() {
   [[ -f "$ADTENTION_CACHE/last_render_seen" ]] || fail "render heartbeat was not written"
 }
 
+test_prompt_marks_display_when_title_daemon_is_enabled() {
+  export ADTENTION_CACHE="$tmp/cache-daemon"
+  export ADTENTION_DISABLE_TITLE_DAEMON=1
+  export ADTENTION_CODEX_TITLE_DAEMON_STARTED=1
+  mkdir -p "$ADTENTION_CACHE"
+  printf '⊕ $2.00 · Supabase\n⊕ $2.00  Supabase\n' > "$ADTENTION_CACHE/terminal.txt"
+
+  # shellcheck disable=SC1091
+  source "$root/scripts/shell-integration.sh"
+  __adtention_codex_prompt >/dev/null
+
+  [[ -f "$ADTENTION_CACHE/last_render_seen" ]] || fail "prompt did not mark render while title daemon flag was set"
+  unset ADTENTION_CODEX_TITLE_DAEMON_STARTED
+}
+
 test_installer_is_idempotent() {
   local fake_home="$tmp/home"
   mkdir -p "$fake_home"
@@ -44,6 +59,7 @@ test_installer_is_idempotent() {
 }
 
 test_prompt_function_marks_display
+test_prompt_marks_display_when_title_daemon_is_enabled
 test_installer_is_idempotent
 
 printf 'shell integration tests passed\n'

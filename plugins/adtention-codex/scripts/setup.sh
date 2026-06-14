@@ -3,7 +3,7 @@
 set -u
 
 root="${PLUGIN_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")/.." && pwd)}"
-cache_dir="${ADTENTION_CACHE:-${PLUGIN_DATA:-$HOME/.codex/adtention}}"
+cache_dir="${ADTENTION_CACHE:-$HOME/.codex/adtention}"
 
 mkdir -p "$cache_dir" 2>/dev/null || exit 0
 
