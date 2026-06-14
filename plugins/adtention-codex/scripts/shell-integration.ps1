@@ -1,5 +1,22 @@
+function Get-ADtentionCodexCache {
+  if ($env:ADTENTION_CACHE) { return $env:ADTENTION_CACHE }
+  $claudeCache = Join-Path $HOME ".claude/adtention"
+  if (Test-Path $claudeCache) { return $claudeCache }
+  return (Join-Path $HOME ".adtention")
+}
+
+function Test-ADtentionCodexDisplay {
+  return (($env:ADTENTION_DISPLAY -eq "1") -or
+    ($env:ADTENTION_CODEX_ACTIVE -eq "1") -or
+    ($env:ADTENTION_CODEX_DISPLAY -eq "1") -or
+    ($env:CODEX_SHELL -eq "1") -or
+    ($env:__CFBundleIdentifier -eq "com.openai.codex"))
+}
+
 function Invoke-ADtentionCodexPrompt {
-  $cache = if ($env:ADTENTION_CACHE) { $env:ADTENTION_CACHE } else { Join-Path $HOME ".codex/adtention" }
+  if (!(Test-ADtentionCodexDisplay)) { return }
+
+  $cache = Get-ADtentionCodexCache
   $terminal = Join-Path $cache "terminal.txt"
   $title = ""
   $line = ""
@@ -49,6 +66,42 @@ function Invoke-ADtentionCodexOpen {
 
 function global:adtention-open {
   Invoke-ADtentionCodexOpen @args
+}
+
+function global:adtention-codex-on {
+  $env:ADTENTION_DISPLAY = "1"
+  Invoke-ADtentionCodexPrompt
+}
+
+function global:adtention-codex-off {
+  Remove-Item Env:\ADTENTION_DISPLAY -ErrorAction SilentlyContinue
+  Remove-Item Env:\ADTENTION_CODEX_ACTIVE -ErrorAction SilentlyContinue
+  Remove-Item Env:\ADTENTION_CODEX_DISPLAY -ErrorAction SilentlyContinue
+}
+
+if (-not $Global:ADtentionCodexRealCodex) {
+  $codexCommand = Get-Command codex -CommandType Application -ErrorAction SilentlyContinue
+  if ($codexCommand) {
+    $Global:ADtentionCodexRealCodex = $codexCommand.Source
+  }
+}
+
+if (($env:ADTENTION_WRAP_CODEX_CLI -ne "0") -and $Global:ADtentionCodexRealCodex) {
+  function global:codex {
+    $hadDisplay = Test-Path Env:\ADTENTION_DISPLAY
+    $oldDisplay = $env:ADTENTION_DISPLAY
+    $hadActive = Test-Path Env:\ADTENTION_CODEX_ACTIVE
+    $oldActive = $env:ADTENTION_CODEX_ACTIVE
+
+    $env:ADTENTION_DISPLAY = "1"
+    $env:ADTENTION_CODEX_ACTIVE = "1"
+    & $Global:ADtentionCodexRealCodex @args
+    $status = $LASTEXITCODE
+
+    if ($hadDisplay) { $env:ADTENTION_DISPLAY = $oldDisplay } else { Remove-Item Env:\ADTENTION_DISPLAY -ErrorAction SilentlyContinue }
+    if ($hadActive) { $env:ADTENTION_CODEX_ACTIVE = $oldActive } else { Remove-Item Env:\ADTENTION_CODEX_ACTIVE -ErrorAction SilentlyContinue }
+    if ($null -ne $status) { $global:LASTEXITCODE = $status }
+  }
 }
 
 if (-not $Global:ADtentionCodexOriginalPrompt) {

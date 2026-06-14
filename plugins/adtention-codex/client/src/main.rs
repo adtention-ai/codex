@@ -111,7 +111,16 @@ fn render() -> io::Result<()> {
 
 fn title_daemon(interval_secs: u64) -> io::Result<()> {
     let cache = cache_dir();
+    let parent_pid = env::var("ADTENTION_PARENT_PID")
+        .ok()
+        .and_then(|pid| pid.parse::<u32>().ok());
     loop {
+        if let Some(pid) = parent_pid {
+            if !process_is_alive(pid) {
+                break;
+            }
+        }
+
         let title = fs::read_to_string(cache.join("title.txt"))
             .or_else(|_| fs::read_to_string(cache.join("balance_display")))
             .unwrap_or_else(|_| "⊕ $0.00".to_string());
@@ -119,9 +128,31 @@ fn title_daemon(interval_secs: u64) -> io::Result<()> {
         if !title.is_empty() {
             print!("\x1b]0;{title}\x07");
             let _ = io::stdout().flush();
+            mark_render_seen(&cache, SystemTime::now()).ok();
         }
         thread::sleep(Duration::from_secs(interval_secs));
     }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn process_is_alive(pid: u32) -> bool {
+    Command::new("kill")
+        .args(["-0", &pid.to_string()])
+        .status()
+        .map(|status| status.success())
+        .unwrap_or(false)
+}
+
+#[cfg(windows)]
+fn process_is_alive(pid: u32) -> bool {
+    let script =
+        format!("if (Get-Process -Id {pid} -ErrorAction SilentlyContinue) {{ exit 0 }} else {{ exit 1 }}");
+    Command::new("powershell")
+        .args(["-NoProfile", "-Command", script.as_str()])
+        .status()
+        .map(|status| status.success())
+        .unwrap_or(false)
 }
 
 fn open_sponsor(target: Option<String>) -> io::Result<()> {
@@ -177,7 +208,12 @@ fn cache_dir() -> PathBuf {
                 .or_else(|| env::var_os("USERPROFILE"))
                 .map(PathBuf::from)
                 .unwrap_or_else(|| PathBuf::from("."));
-            home.join(".codex").join("adtention")
+            let claude_cache = home.join(".claude").join("adtention");
+            if claude_cache.exists() {
+                claude_cache
+            } else {
+                home.join(".adtention")
+            }
         })
 }
 

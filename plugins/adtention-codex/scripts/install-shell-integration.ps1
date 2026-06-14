@@ -1,6 +1,12 @@
 param(
   [string]$PluginRoot = $(Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)),
-  [string]$Cache = $(if ($env:ADTENTION_CACHE) { $env:ADTENTION_CACHE } else { Join-Path $HOME ".codex/adtention" })
+  [string]$Cache = $(if ($env:ADTENTION_CACHE) {
+      $env:ADTENTION_CACHE
+    } elseif (Test-Path (Join-Path $HOME ".claude/adtention")) {
+      Join-Path $HOME ".claude/adtention"
+    } else {
+      Join-Path $HOME ".adtention"
+    })
 )
 
 $start = "# >>> ADtention Codex >>>"

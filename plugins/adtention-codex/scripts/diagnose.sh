@@ -1,8 +1,12 @@
 #!/usr/bin/env bash
 set -u
 
-cache_dir="${ADTENTION_CACHE:-$HOME/.codex/adtention}"
 root="${PLUGIN_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")/.." && pwd)}"
+if [ -r "$root/scripts/cache-dir.sh" ]; then
+  # shellcheck disable=SC1091
+  . "$root/scripts/cache-dir.sh"
+fi
+cache_dir="$(adtention_default_cache_dir 2>/dev/null || printf '%s\n' "${ADTENTION_CACHE:-$HOME/.adtention}")"
 
 printf 'cache: %s\n' "$cache_dir"
 printf 'api: %s\n' "${ADTENTION_API:-https://api.adtention.ai}"

@@ -3,7 +3,11 @@
 set -u
 
 root="${PLUGIN_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")/.." && pwd)}"
-cache_dir="${ADTENTION_CACHE:-$HOME/.codex/adtention}"
+if [ -r "$root/scripts/cache-dir.sh" ]; then
+  # shellcheck disable=SC1091
+  . "$root/scripts/cache-dir.sh"
+fi
+cache_dir="$(adtention_default_cache_dir 2>/dev/null || printf '%s\n' "${ADTENTION_CACHE:-$HOME/.adtention}")"
 
 mkdir -p "$cache_dir" 2>/dev/null || exit 0
 

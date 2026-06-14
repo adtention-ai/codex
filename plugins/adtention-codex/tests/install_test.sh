@@ -16,6 +16,7 @@ run_install() {
   ADTENTION_INSTALL_OS="$os_name" \
   ADTENTION_SKIP_BINARY_DOWNLOAD=1 \
   ADTENTION_SKIP_CODEX_INSTALL=1 \
+  ADTENTION_SKIP_DAEMON_CLEANUP=1 \
   ADTENTION_NO_START_SERVICE=1 \
   "$repo_root/install.sh" >/tmp/adtention-install-test.out
 }
@@ -46,6 +47,7 @@ SH
   ADTENTION_INSTALL_OS="Linux" \
   ADTENTION_SKIP_BINARY_DOWNLOAD=1 \
   ADTENTION_CODEX_APP_BIN="$good_codex" \
+  ADTENTION_SKIP_DAEMON_CLEANUP=1 \
   ADTENTION_NO_START_SERVICE=1 \
   "$repo_root/install.sh" >/tmp/adtention-install-test-codex.out
 
@@ -106,7 +108,7 @@ printf '%s\\n' "\$url" >> "$curl_log"
 cat > "\$out" <<'BIN'
 #!/usr/bin/env bash
 if [ "\${1:-}" = "setup" ]; then
-  mkdir -p "\${ADTENTION_CACHE:-\$HOME/.codex/adtention}"
+  mkdir -p "\${ADTENTION_CACHE:-\$HOME/.adtention}"
   exit 0
 fi
 printf 'fake release binary\n'
@@ -120,17 +122,53 @@ SH
   ADTENTION_INSTALL_OS="Linux" \
   ADTENTION_INSTALL_ARCH="x86_64" \
   ADTENTION_SKIP_CODEX_INSTALL=1 \
+  ADTENTION_SKIP_DAEMON_CLEANUP=1 \
   "$repo_root/install.sh" --version v9.9.9 --ref "ABC-123_!!" >/tmp/adtention-install-test-download.out
 
   local installed_root="$tmp/home-download/.codex/adtention-codex"
   grep -q 'releases/download/v9.9.9/adtention-codex-linux-amd64' "$curl_log" || fail "installer did not download linux amd64 release asset"
   [[ -x "$installed_root/plugins/adtention-codex/bin/adtention-codex-linux-amd64" ]] || fail "downloaded release asset is missing"
-  [[ "$(cat "$tmp/home-download/.codex/adtention/ref")" = "abc123" ]] || fail "installer did not write sanitized referral code"
+  [[ "$(cat "$tmp/home-download/.adtention/ref")" = "abc123" ]] || fail "installer did not write sanitized referral code"
+}
+
+test_installer_uses_claude_cache_when_present() {
+  local home="$tmp/home-claude-cache"
+  mkdir -p "$home/.claude/adtention"
+
+  HOME="$home" \
+  ADTENTION_INSTALL_OS="Linux" \
+  ADTENTION_SKIP_BINARY_DOWNLOAD=1 \
+  ADTENTION_SKIP_CODEX_INSTALL=1 \
+  ADTENTION_SKIP_DAEMON_CLEANUP=1 \
+  ADTENTION_NO_START_SERVICE=1 \
+  "$repo_root/install.sh" >/tmp/adtention-install-test-claude.out
+
+  grep -q "$home/.claude/adtention" "$home/.zshrc" || fail "installer did not point shell integration at existing Claude cache"
+}
+
+test_installer_migrates_legacy_codex_cache() {
+  local home="$tmp/home-legacy-cache"
+  mkdir -p "$home/.codex/adtention"
+  printf '{"publisher_id":"pub_legacy"}' > "$home/.codex/adtention/identity.json"
+  printf '⊕ $4.20' > "$home/.codex/adtention/balance_display"
+
+  HOME="$home" \
+  ADTENTION_INSTALL_OS="Linux" \
+  ADTENTION_SKIP_BINARY_DOWNLOAD=1 \
+  ADTENTION_SKIP_CODEX_INSTALL=1 \
+  ADTENTION_SKIP_DAEMON_CLEANUP=1 \
+  ADTENTION_NO_START_SERVICE=1 \
+  "$repo_root/install.sh" >/tmp/adtention-install-test-legacy.out
+
+  grep -q 'pub_legacy' "$home/.adtention/identity.json" || fail "installer did not migrate legacy identity"
+  grep -q '⊕ $4.20' "$home/.adtention/balance_display" || fail "installer did not migrate legacy balance"
 }
 
 test_macos_installer_is_one_command_and_idempotent
 test_linux_installer_is_one_command_and_idempotent
 test_installer_skips_broken_codex_path_shim
 test_installer_downloads_release_binary_and_writes_ref
+test_installer_uses_claude_cache_when_present
+test_installer_migrates_legacy_codex_cache
 
 printf 'installer tests passed\n'

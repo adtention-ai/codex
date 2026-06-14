@@ -3,13 +3,26 @@ set -euo pipefail
 
 home_dir="${HOME:?HOME is required}"
 install_root="${ADTENTION_INSTALL_ROOT:-$home_dir/.codex/adtention-codex}"
-shared_cache="${ADTENTION_CACHE:-$home_dir/.codex/adtention}"
 source_root=""
 repo_root=""
 plugin_root=""
 client_bin=""
 ref_code="${ADTENTION_REF:-}"
 release_version="${ADTENTION_VERSION:-latest}"
+
+default_cache_dir() {
+  if [ -n "${ADTENTION_CACHE:-}" ]; then
+    printf '%s\n' "$ADTENTION_CACHE"
+    return 0
+  fi
+  if [ -d "$home_dir/.claude/adtention" ] || [ -f "$home_dir/.claude/adtention/identity.json" ]; then
+    printf '%s\n' "$home_dir/.claude/adtention"
+    return 0
+  fi
+  printf '%s\n' "$home_dir/.adtention"
+}
+
+shared_cache="$(default_cache_dir)"
 
 log() {
   printf '[adtention] %s\n' "$*"
@@ -47,6 +60,26 @@ write_ref_code() {
   mkdir -p "$shared_cache"
   printf '%s' "$safe_ref" > "$shared_cache/ref"
   chmod 600 "$shared_cache/ref" 2>/dev/null || true
+}
+
+migrate_legacy_cache() {
+  local legacy file
+  legacy="$home_dir/.codex/adtention"
+  [ "$legacy" != "$shared_cache" ] || return 0
+  [ -d "$legacy" ] || return 0
+  mkdir -p "$shared_cache"
+  for file in identity.json balance balance_display current_ad.txt current_click.txt title.txt prompt_line.txt terminal.txt category.txt source.txt ref; do
+    [ -e "$legacy/$file" ] || continue
+    [ ! -e "$shared_cache/$file" ] || continue
+    cp -p "$legacy/$file" "$shared_cache/$file" 2>/dev/null || cp "$legacy/$file" "$shared_cache/$file" 2>/dev/null || true
+  done
+}
+
+stop_old_title_daemons() {
+  [ "${ADTENTION_SKIP_DAEMON_CLEANUP:-0}" = "1" ] && return 0
+  if command -v pkill >/dev/null 2>&1; then
+    pkill -f 'adtention-codex.*title-daemon' 2>/dev/null || true
+  fi
 }
 
 find_codex() {
@@ -210,7 +243,9 @@ main() {
   fetch_source_if_needed
   sync_to_install_root
   mkdir -p "$shared_cache"
+  migrate_legacy_cache
   write_ref_code
+  stop_old_title_daemons
   download_release_binary || true
   ensure_client
   install_codex_plugin

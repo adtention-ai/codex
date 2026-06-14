@@ -13,7 +13,13 @@ It shows:
 ```
 
 The terminal title/tab stays updated while you work, and the readable sponsor
-line appears above the prompt. No popups. No forced tmux. No special terminal.
+line appears above the prompt when that prompt is visible. No popups. No forced
+tmux. No special terminal.
+
+Codex CLI itself is a full-screen terminal UI, so it hides the normal shell
+prompt while it runs. In that mode the live ADtention surface is the
+terminal/window title. In the Codex app terminal, ADtention can also print the
+prompt line because the shell prompt is visible there.
 
 Open the current sponsor with:
 
@@ -105,10 +111,13 @@ a Codex safety step, not an ADtention prompt.
 
 ## What You Get
 
-- **Persistent terminal title/tab text** while commands run.
-- **Readable sponsor line above the prompt** when the terminal is ready.
+- **Codex app terminal display** using Codex app environment detection.
+- **Scoped Codex CLI display** through a lightweight `codex` shell wrapper.
+- **Persistent terminal title/tab text** while Codex is active.
+- **Readable sponsor line above the prompt** when the shell prompt is visible.
 - **Open command**: `adtention-open` opens the cached sponsor URL.
 - **No terminal lock-in**: works through shell integration, not tmux/zellij.
+- **No unrelated terminal noise**: random terminals stay quiet by default.
 - **Fast prompt path**: shell builtins read one tiny cache file.
 - **Prompt-gated serving**: sponsor text changes only after real Codex input.
 - **One install command** for plugin and shell integration.
@@ -124,6 +133,12 @@ Two parts are deliberately separate:
 - **Codex prompt hook**: classifies the prompt locally, checks the render heartbeat,
   calls `/v1/serve`, and updates the cache.
 
+The shell integration is quiet unless one of these is true:
+
+- the terminal is inside the Codex app (`CODEX_SHELL=1` or Codex bundle env)
+- the user is running the wrapped `codex` command
+- the user manually enables display with `adtention-codex-on`
+
 There is no macOS Accessibility permission, Windows scheduled task, Linux
 systemd helper, tmux requirement, or foreground-window watcher.
 
@@ -131,11 +146,15 @@ systemd helper, tmux requirement, or foreground-window watcher.
 
 ## Runtime State
 
-All components use the same cache by default:
+All components use the same account cache by default:
 
 ```text
-~/.codex/adtention/
+~/.claude/adtention/   # when Claude ADtention is already installed
+~/.adtention/          # for Codex-only installs
 ```
+
+Older Codex-only installs under `~/.codex/adtention/` are migrated on install
+without overwriting an existing shared identity.
 
 Override it with:
 

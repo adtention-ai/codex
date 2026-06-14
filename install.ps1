@@ -8,7 +8,15 @@ $ErrorActionPreference = "Stop"
 $ScriptPath = $MyInvocation.MyCommand.Path
 $SourceRoot = if ($ScriptPath) { Split-Path -Parent $ScriptPath } else { (Get-Location).Path }
 $InstallRoot = if ($env:ADTENTION_INSTALL_ROOT) { $env:ADTENTION_INSTALL_ROOT } else { Join-Path $HOME ".codex/adtention-codex" }
-$Cache = if ($env:ADTENTION_CACHE) { $env:ADTENTION_CACHE } else { Join-Path $HOME ".codex/adtention" }
+
+function Get-ADtentionDefaultCache {
+  if ($env:ADTENTION_CACHE) { return $env:ADTENTION_CACHE }
+  $claudeCache = Join-Path $HOME ".claude/adtention"
+  if (Test-Path $claudeCache) { return $claudeCache }
+  return (Join-Path $HOME ".adtention")
+}
+
+$Cache = Get-ADtentionDefaultCache
 
 function Get-SafeRef([string]$Value) {
   if (!$Value) { return "" }
@@ -43,6 +51,25 @@ $PluginRoot = Join-Path $RepoRoot "plugins/adtention-codex"
 $ClientBin = Join-Path $PluginRoot "bin/adtention-codex.exe"
 $PlatformBin = Join-Path $PluginRoot "bin/adtention-codex-windows-amd64.exe"
 New-Item -ItemType Directory -Force -Path $Cache | Out-Null
+
+$LegacyCache = Join-Path $HOME ".codex/adtention"
+if ((Test-Path $LegacyCache) -and ((Resolve-Path $LegacyCache).Path -ne (Resolve-Path $Cache).Path)) {
+  foreach ($file in @("identity.json", "balance", "balance_display", "current_ad.txt", "current_click.txt", "title.txt", "prompt_line.txt", "terminal.txt", "category.txt", "source.txt", "ref")) {
+    $from = Join-Path $LegacyCache $file
+    $to = Join-Path $Cache $file
+    if ((Test-Path $from) -and !(Test-Path $to)) {
+      Copy-Item $from $to -Force
+    }
+  }
+}
+
+if ($env:ADTENTION_SKIP_DAEMON_CLEANUP -ne "1") {
+  Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
+    Where-Object { $_.CommandLine -match "adtention-codex.*title-daemon" } |
+    ForEach-Object {
+      try { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue } catch {}
+    }
+}
 
 $SafeRef = Get-SafeRef $Ref
 if ($SafeRef) {

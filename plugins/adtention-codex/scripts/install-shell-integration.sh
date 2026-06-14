@@ -2,7 +2,11 @@
 set -euo pipefail
 
 root="${ADTENTION_PLUGIN_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
-cache="${ADTENTION_CACHE:-$HOME/.codex/adtention}"
+if [ -r "$root/scripts/cache-dir.sh" ]; then
+  # shellcheck disable=SC1091
+  . "$root/scripts/cache-dir.sh"
+fi
+cache="$(adtention_default_cache_dir 2>/dev/null || printf '%s\n' "${ADTENTION_CACHE:-$HOME/.adtention}")"
 start_marker="# >>> ADtention Codex >>>"
 end_marker="# <<< ADtention Codex <<<"
 
