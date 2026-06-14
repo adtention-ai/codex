@@ -1,0 +1,43 @@
+name: ci
+
+# Same release discipline as adtention-claude: rebuild the committed client
+# binaries from the root build script and fail when bin/ is stale.
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Rust format and tests
+        run: |
+          cargo fmt --check --manifest-path plugins/adtention-codex/client/Cargo.toml
+          cargo test --locked --manifest-path plugins/adtention-codex/client/Cargo.toml
+
+      - name: Shell tests
+        run: |
+          bash -n install.sh build.sh
+          bash -n plugins/adtention-codex/scripts/*.sh
+          bash plugins/adtention-codex/tests/shell_integration_test.sh
+          bash plugins/adtention-codex/tests/refresh_shell_test.sh
+          bash plugins/adtention-codex/tests/install_test.sh
+
+      - name: JSON manifests
+        run: |
+          python3 -m json.tool plugins/adtention-codex/.codex-plugin/plugin.json >/dev/null
+          python3 -m json.tool plugins/adtention-codex/hooks/hooks.json >/dev/null
+          python3 -m json.tool .agents/plugins/marketplace.json >/dev/null
+
+      - name: Committed binaries match a fresh release build
+        run: |
+          ./build.sh
+          if ! git diff --quiet -- plugins/adtention-codex/bin/; then
+            echo "::error::plugins/adtention-codex/bin/ does not match a fresh release build. Run ./build.sh and commit the result."
+            git diff --stat -- plugins/adtention-codex/bin/
+            exit 1
+          fi
+          echo "plugins/adtention-codex/bin/ matches a fresh release build, and SHA256SUMS is current."

@@ -22,7 +22,7 @@ if command -v jq >/dev/null 2>&1; then command -v jq; else printf 'missing\n'; f
 printf 'curl: '
 if command -v curl >/dev/null 2>&1; then command -v curl; else printf 'missing\n'; fi
 
-for file in identity.json balance_display current_ad.txt title.txt prompt_line.txt terminal.txt category.txt source.txt last_render_seen last_viewable_seen viewability.json last_skipped last_warning; do
+for file in identity.json balance_display current_ad.txt current_click.txt title.txt prompt_line.txt terminal.txt category.txt source.txt last_render_seen last_skipped last_warning; do
   path="$cache_dir/$file"
   if [ -f "$path" ]; then
     printf '%s: ' "$file"

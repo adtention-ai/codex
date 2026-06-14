@@ -1,15 +1,13 @@
 use adtention_codex::{
-    evaluate_viewability, mark_render_seen, mark_viewable_seen, refresh_once, render_ad,
-    visible_ratio_for_rect, write_viewability_decision, HttpClient, RefreshConfig,
-    ViewabilityDecision, ViewabilitySample,
+    mark_render_seen, refresh_once, render_ad, resolve_open_url, HttpClient, RefreshConfig,
 };
 use std::env;
 use std::fs;
 use std::io::{self, Read, Write};
 use std::path::PathBuf;
-use std::process::{Command, Stdio};
+use std::process::Command;
 use std::thread;
-use std::time::{Duration, Instant, SystemTime};
+use std::time::{Duration, SystemTime};
 
 struct CurlHttp;
 
@@ -48,34 +46,13 @@ fn main() {
         "mark-display" | "mark-render" => mark_render_seen(&cache_dir(), SystemTime::now())
             .map(|_| 0)
             .unwrap_or(0),
-        "mark-viewable" => {
-            let source = args.next().unwrap_or_else(|| "manual-helper".to_string());
-            mark_viewable_seen(&cache_dir(), &source, SystemTime::now())
-                .map(|_| 0)
-                .unwrap_or(0)
-        }
         "title-daemon" => {
             let interval = parse_env_u64("ADTENTION_TITLE_INTERVAL", 15).max(5);
             title_daemon(interval).map(|_| 0).unwrap_or(0)
         }
-        "viewability-check" => {
-            let target = args.next().unwrap_or_else(target_app_name);
-            let min_ratio = parse_env_f64("ADTENTION_MIN_VISIBLE_RATIO", 0.5);
-            let decision = probe_viewability(&target, min_ratio);
-            let ok = write_viewability_decision(&cache_dir(), &decision, SystemTime::now())
-                .unwrap_or(false);
-            if ok {
-                0
-            } else {
-                1
-            }
-        }
-        "viewability-daemon" => {
-            let target = args.next().unwrap_or_else(target_app_name);
-            let interval = parse_env_u64("ADTENTION_VIEWABILITY_INTERVAL", 5).max(2);
-            viewability_daemon(&target, interval)
-                .map(|_| 0)
-                .unwrap_or(0)
+        "open" => {
+            let target = args.next();
+            open_sponsor(target).map(|_| 0).unwrap_or(1)
         }
         _ => {
             eprintln!("unknown command: {command}");
@@ -106,7 +83,6 @@ fn refresh(cwd: PathBuf, transcript_path: Option<PathBuf>) -> io::Result<()> {
         transcript_path,
         hook_input,
         display_ttl_secs: parse_env_u64("ADTENTION_DISPLAY_TTL", 120),
-        viewability_ttl_secs: parse_env_u64("ADTENTION_VIEWABILITY_TTL", 120),
         min_dwell_secs: parse_env_u64("ADTENTION_MIN_DWELL", 15),
         now: SystemTime::now(),
     };
@@ -148,291 +124,49 @@ fn title_daemon(interval_secs: u64) -> io::Result<()> {
     }
 }
 
-fn viewability_daemon(target_app: &str, interval_secs: u64) -> io::Result<()> {
-    let cache = cache_dir();
-    let min_ratio = parse_env_f64("ADTENTION_MIN_VISIBLE_RATIO", 0.5);
-    loop {
-        let decision = probe_viewability(target_app, min_ratio);
-        let _ = write_viewability_decision(&cache, &decision, SystemTime::now());
-        thread::sleep(Duration::from_secs(interval_secs));
-    }
+fn open_sponsor(target: Option<String>) -> io::Result<()> {
+    let raw_url = match target {
+        Some(url) => url,
+        None => fs::read_to_string(cache_dir().join("current_click.txt")).unwrap_or_default(),
+    };
+    let api = env::var("ADTENTION_API").unwrap_or_else(|_| "https://api.adtention.ai".to_string());
+    let Some(url) = resolve_open_url(&raw_url, &api) else {
+        if raw_url.trim().is_empty() {
+            println!("adtention: no sponsor to open yet. Send a prompt first, then try again.");
+        } else {
+            println!("adtention: refusing to open an unsupported URL.");
+        }
+        return Err(io::Error::new(io::ErrorKind::InvalidInput, "invalid URL"));
+    };
+    open_url(&url)?;
+    println!("adtention: opened the sponsor in your browser.");
+    Ok(())
 }
 
-fn probe_viewability(target_app: &str, min_visible_ratio: f64) -> ViewabilityDecision {
+fn open_url(url: &str) -> io::Result<()> {
+    if let Some(program) = env::var_os("ADTENTION_OPEN_COMMAND") {
+        return Command::new(program).arg(url).status().map(|_| ());
+    }
     #[cfg(target_os = "macos")]
     {
-        return probe_macos(target_app, min_visible_ratio);
+        return Command::new("open").arg(url).status().map(|_| ());
     }
     #[cfg(target_os = "windows")]
     {
-        return probe_windows(target_app, min_visible_ratio);
+        return Command::new("rundll32")
+            .args(["url.dll,FileProtocolHandler", url])
+            .status()
+            .map(|_| ());
     }
     #[cfg(all(unix, not(target_os = "macos")))]
     {
-        return probe_linux(target_app, min_visible_ratio);
+        return Command::new("xdg-open").arg(url).status().map(|_| ());
     }
     #[allow(unreachable_code)]
-    ViewabilityDecision::Unavailable {
-        source: "unknown-viewability-helper".to_string(),
-        reason: "unsupported_os".to_string(),
-    }
-}
-
-#[cfg(target_os = "macos")]
-fn probe_macos(target_app: &str, min_visible_ratio: f64) -> ViewabilityDecision {
-    let source = "macos-frontmost-helper";
-    let script = format!(
-        r#"tell application "System Events"
-set frontApp to name of first application process whose frontmost is true
-set hasWindow to false
-set notMinimized to false
-set winX to 0
-set winY to 0
-set winW to 0
-set winH to 0
-set screenX to 0
-set screenY to 0
-set screenW to 0
-set screenH to 0
-try
-  tell application "Finder" to set desktopBounds to bounds of window of desktop
-  set screenX to item 1 of desktopBounds
-  set screenY to item 2 of desktopBounds
-  set screenW to (item 3 of desktopBounds) - screenX
-  set screenH to (item 4 of desktopBounds) - screenY
-end try
-if exists application process "{target}" then
-  tell application process "{target}"
-    if exists window 1 then
-      set hasWindow to true
-      set windowPosition to position of window 1
-      set windowSize to size of window 1
-      set winX to item 1 of windowPosition
-      set winY to item 2 of windowPosition
-      set winW to item 1 of windowSize
-      set winH to item 2 of windowSize
-      try
-        set notMinimized to not (value of attribute "AXMinimized" of window 1 as boolean)
-      on error
-        set notMinimized to true
-      end try
-    end if
-  end tell
-end if
-return frontApp & tab & hasWindow & tab & notMinimized & tab & winX & tab & winY & tab & winW & tab & winH & tab & screenX & tab & screenY & tab & screenW & tab & screenH
-end tell"#,
-        target = target_app.replace('"', "")
-    );
-    let output = command_output("osascript", &["-e", &script]);
-    let Some(output) = output else {
-        return ViewabilityDecision::Unavailable {
-            source: source.to_string(),
-            reason: "macos_accessibility_unavailable".to_string(),
-        };
-    };
-    let parts: Vec<&str> = output.split('\t').collect();
-    let visible_ratio = visible_ratio_from_parts(&parts, 3).unwrap_or(0.0);
-    let sample = ViewabilitySample {
-        target_app: target_app.to_string(),
-        foreground_app: parts.first().map(|s| s.trim().to_string()),
-        window_visible: parts.get(1).map(|s| s.trim() == "true").unwrap_or(false),
-        not_minimized: parts.get(2).map(|s| s.trim() == "true").unwrap_or(false),
-        visible_ratio,
-    };
-    evaluate_viewability(&sample, source, min_visible_ratio)
-}
-
-#[cfg(target_os = "windows")]
-fn probe_windows(target_app: &str, min_visible_ratio: f64) -> ViewabilityDecision {
-    let source = "windows-foreground-helper";
-    let script = r#"
-Add-Type @"
-using System;
-using System.Diagnostics;
-using System.Runtime.InteropServices;
-using System.Text;
-public struct RECT { public int Left; public int Top; public int Right; public int Bottom; }
-public class W {
-  [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
-  [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr hWnd);
-  [DllImport("user32.dll")] public static extern bool IsIconic(IntPtr hWnd);
-  [DllImport("user32.dll")] public static extern int GetWindowText(IntPtr hWnd, StringBuilder text, int count);
-  [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint processId);
-  [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr hWnd, out RECT rect);
-  [DllImport("user32.dll")] public static extern int GetSystemMetrics(int index);
-}
-"@
-$h=[W]::GetForegroundWindow()
-if ($h -eq [IntPtr]::Zero) { exit 2 }
-$sb=New-Object System.Text.StringBuilder 512
-[void][W]::GetWindowText($h,$sb,$sb.Capacity)
-$processId=0
-[void][W]::GetWindowThreadProcessId($h, [ref]$processId)
-$processName=""
-if ($processId -ne 0) {
-  try { $processName=[Process]::GetProcessById($processId).ProcessName } catch {}
-}
-$rect=New-Object RECT
-[void][W]::GetWindowRect($h, [ref]$rect)
-$visible=[W]::IsWindowVisible($h)
-$notMinimized=-not [W]::IsIconic($h)
-$screenX=[W]::GetSystemMetrics(76)
-$screenY=[W]::GetSystemMetrics(77)
-$screenW=[W]::GetSystemMetrics(78)
-$screenH=[W]::GetSystemMetrics(79)
-$name=($processName + " " + $sb.ToString()).Trim()
-$winW=$rect.Right - $rect.Left
-$winH=$rect.Bottom - $rect.Top
-Write-Output ($name + "`t" + $visible + "`t" + $notMinimized + "`t" + $rect.Left + "`t" + $rect.Top + "`t" + $winW + "`t" + $winH + "`t" + $screenX + "`t" + $screenY + "`t" + $screenW + "`t" + $screenH)
-"#;
-    let output = command_output("powershell.exe", &["-NoProfile", "-Command", script])
-        .or_else(|| command_output("powershell", &["-NoProfile", "-Command", script]));
-    let Some(output) = output else {
-        return ViewabilityDecision::Unavailable {
-            source: source.to_string(),
-            reason: "foreground_window_unavailable".to_string(),
-        };
-    };
-    let parts: Vec<&str> = output.split('\t').collect();
-    let visible_ratio = visible_ratio_from_parts(&parts, 3).unwrap_or(0.0);
-    let sample = ViewabilitySample {
-        target_app: target_app.to_string(),
-        foreground_app: parts.first().map(|s| s.trim().to_string()),
-        window_visible: parts.get(1).map(|s| s.trim() == "True").unwrap_or(false),
-        not_minimized: parts.get(2).map(|s| s.trim() == "True").unwrap_or(false),
-        visible_ratio,
-    };
-    evaluate_viewability(&sample, source, min_visible_ratio)
-}
-
-#[cfg(all(unix, not(target_os = "macos")))]
-fn probe_linux(target_app: &str, min_visible_ratio: f64) -> ViewabilityDecision {
-    let source = "linux-x11-active-window-helper";
-    if env::var_os("WAYLAND_DISPLAY").is_some() && env::var_os("DISPLAY").is_none() {
-        return ViewabilityDecision::Unavailable {
-            source: source.to_string(),
-            reason: "wayland_global_window_inspection_unavailable".to_string(),
-        };
-    }
-    if env::var_os("DISPLAY").is_none() {
-        return ViewabilityDecision::Unavailable {
-            source: source.to_string(),
-            reason: "display_unavailable".to_string(),
-        };
-    }
-    let active_window = command_output("xdotool", &["getactivewindow"]);
-    let Some(active_window) = active_window else {
-        return ViewabilityDecision::Unavailable {
-            source: source.to_string(),
-            reason: "xdotool_unavailable".to_string(),
-        };
-    };
-    let active_window = active_window.trim();
-    let window_name = command_output("xdotool", &["getwindowname", active_window]);
-    let Some(window_name) = window_name else {
-        return ViewabilityDecision::Unavailable {
-            source: source.to_string(),
-            reason: "active_window_name_unavailable".to_string(),
-        };
-    };
-    let geometry = command_output("xdotool", &["getwindowgeometry", "--shell", active_window]);
-    let display_geometry = command_output("xdotool", &["getdisplaygeometry"]);
-    let visible_ratio = geometry
-        .as_deref()
-        .and_then(|geometry| visible_ratio_from_xdotool(geometry, display_geometry.as_deref()))
-        .unwrap_or(0.0);
-    let sample = ViewabilitySample {
-        target_app: target_app.to_string(),
-        foreground_app: Some(window_name),
-        window_visible: true,
-        not_minimized: true,
-        visible_ratio,
-    };
-    evaluate_viewability(&sample, source, min_visible_ratio)
-}
-
-fn visible_ratio_from_parts(parts: &[&str], offset: usize) -> Option<f64> {
-    Some(visible_ratio_for_rect(
-        parse_part_f64(parts, offset)?,
-        parse_part_f64(parts, offset + 1)?,
-        parse_part_f64(parts, offset + 2)?,
-        parse_part_f64(parts, offset + 3)?,
-        parse_part_f64(parts, offset + 4)?,
-        parse_part_f64(parts, offset + 5)?,
-        parse_part_f64(parts, offset + 6)?,
-        parse_part_f64(parts, offset + 7)?,
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "unsupported platform",
     ))
-}
-
-fn parse_part_f64(parts: &[&str], index: usize) -> Option<f64> {
-    parts.get(index)?.trim().parse::<f64>().ok()
-}
-
-#[cfg(all(unix, not(target_os = "macos")))]
-fn visible_ratio_from_xdotool(geometry: &str, display_geometry: Option<&str>) -> Option<f64> {
-    let x = shell_value_f64(geometry, "X")?;
-    let y = shell_value_f64(geometry, "Y")?;
-    let width = shell_value_f64(geometry, "WIDTH")?;
-    let height = shell_value_f64(geometry, "HEIGHT")?;
-    let display = display_geometry?;
-    let mut dims = display.split_whitespace();
-    let screen_width = dims.next()?.parse::<f64>().ok()?;
-    let screen_height = dims.next()?.parse::<f64>().ok()?;
-    Some(visible_ratio_for_rect(
-        x,
-        y,
-        width,
-        height,
-        0.0,
-        0.0,
-        screen_width,
-        screen_height,
-    ))
-}
-
-#[cfg(all(unix, not(target_os = "macos")))]
-fn shell_value_f64(body: &str, key: &str) -> Option<f64> {
-    let prefix = format!("{key}=");
-    body.lines()
-        .find_map(|line| line.strip_prefix(&prefix))
-        .and_then(|value| value.trim().parse::<f64>().ok())
-}
-
-fn command_output(program: &str, args: &[&str]) -> Option<String> {
-    let timeout = Duration::from_secs(parse_env_u64("ADTENTION_PROBE_TIMEOUT", 3).max(1));
-    command_output_with_timeout(program, args, timeout)
-}
-
-fn command_output_with_timeout(program: &str, args: &[&str], timeout: Duration) -> Option<String> {
-    let mut child = Command::new(program)
-        .args(args)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-        .ok()?;
-    let started = Instant::now();
-    loop {
-        match child.try_wait() {
-            Ok(Some(status)) => {
-                let mut text = String::new();
-                if let Some(mut stdout) = child.stdout.take() {
-                    let _ = stdout.read_to_string(&mut text);
-                }
-                if !status.success() {
-                    return None;
-                }
-                let text = text.trim().to_string();
-                return if text.is_empty() { None } else { Some(text) };
-            }
-            Ok(None) if started.elapsed() >= timeout => {
-                let _ = child.kill();
-                let _ = child.wait();
-                return None;
-            }
-            Ok(None) => thread::sleep(Duration::from_millis(50)),
-            Err(_) => return None,
-        }
-    }
 }
 
 fn cache_dir() -> PathBuf {
@@ -468,58 +202,11 @@ fn parse_env_usize(name: &str, default: usize) -> usize {
         .unwrap_or(default)
 }
 
-fn parse_env_f64(name: &str, default: f64) -> f64 {
-    env::var(name)
-        .ok()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(default)
-}
-
-fn target_app_name() -> String {
-    env::var("ADTENTION_TARGET_APP").unwrap_or_else(|_| "Codex".to_string())
-}
-
 fn columns() -> Option<usize> {
     env::var("COLUMNS").ok().and_then(|s| s.parse().ok())
 }
 
 fn print_usage_and_exit() -> ! {
-    eprintln!(
-        "usage: adtention-codex <setup|refresh|render|mark-render|mark-viewable|title-daemon|viewability-check|viewability-daemon>"
-    );
+    eprintln!("usage: adtention-codex <setup|refresh|render|mark-render|title-daemon|open>");
     std::process::exit(2);
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[cfg(unix)]
-    #[test]
-    fn command_output_returns_trimmed_text() {
-        assert_eq!(
-            command_output_with_timeout(
-                "/bin/sh",
-                &["-c", "printf 'hello\\n'"],
-                Duration::from_secs(1),
-            )
-            .as_deref(),
-            Some("hello")
-        );
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn command_output_returns_none_after_timeout() {
-        let started = Instant::now();
-
-        let output = command_output_with_timeout(
-            "/bin/sh",
-            &["-c", "sleep 2; printf too-late"],
-            Duration::from_millis(100),
-        );
-
-        assert_eq!(output, None);
-        assert!(started.elapsed() < Duration::from_secs(2));
-    }
 }

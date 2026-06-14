@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-os_name="${ADTENTION_INSTALL_OS:-$(uname -s)}"
 home_dir="${HOME:?HOME is required}"
 install_root="${ADTENTION_INSTALL_ROOT:-$home_dir/.codex/adtention-codex}"
 shared_cache="${ADTENTION_CACHE:-$home_dir/.codex/adtention}"
@@ -9,9 +8,45 @@ source_root=""
 repo_root=""
 plugin_root=""
 client_bin=""
+ref_code="${ADTENTION_REF:-}"
+release_version="${ADTENTION_VERSION:-latest}"
 
 log() {
   printf '[adtention] %s\n' "$*"
+}
+
+parse_args() {
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --ref)
+        [ "$#" -ge 2 ] || { log "--ref requires a value"; exit 2; }
+        ref_code="$2"
+        shift 2
+        ;;
+      --version)
+        [ "$#" -ge 2 ] || { log "--version requires a value"; exit 2; }
+        release_version="$2"
+        shift 2
+        ;;
+      *)
+        log "Unknown argument: $1"
+        exit 2
+        ;;
+    esac
+  done
+}
+
+sanitize_ref() {
+  printf '%s' "$1" | tr '[:upper:]' '[:lower:]' | LC_ALL=C tr -cd 'a-z0-9' | cut -c 1-32
+}
+
+write_ref_code() {
+  local safe_ref
+  safe_ref="$(sanitize_ref "$ref_code")"
+  [ -n "$safe_ref" ] || return 0
+  mkdir -p "$shared_cache"
+  printf '%s' "$safe_ref" > "$shared_cache/ref"
+  chmod 600 "$shared_cache/ref" 2>/dev/null || true
 }
 
 find_codex() {
@@ -93,6 +128,49 @@ sync_to_install_root() {
   client_bin="$plugin_root/bin/adtention-codex"
 }
 
+release_asset_name() {
+  local os_name arch
+  os_name="${ADTENTION_INSTALL_OS:-$(uname -s)}"
+  arch="${ADTENTION_INSTALL_ARCH:-$(uname -m)}"
+  case "$arch" in
+    x86_64|amd64) arch=amd64 ;;
+    arm64|aarch64) arch=arm64 ;;
+  esac
+  case "$os_name:$arch" in
+    Darwin:amd64|darwin:amd64) printf '%s\n' "adtention-codex-darwin-amd64" ;;
+    Darwin:arm64|darwin:arm64) printf '%s\n' "adtention-codex-darwin-arm64" ;;
+    Linux:amd64|linux:amd64) printf '%s\n' "adtention-codex-linux-amd64" ;;
+    Linux:arm64|linux:arm64) printf '%s\n' "adtention-codex-linux-arm64" ;;
+    *) return 1 ;;
+  esac
+}
+
+download_release_binary() {
+  [ "${ADTENTION_SKIP_BINARY_DOWNLOAD:-0}" != "1" ] || return 1
+  local asset url tmp
+  asset="$(release_asset_name)" || return 1
+  mkdir -p "$plugin_root/bin"
+
+  if [ "$release_version" = "latest" ]; then
+    url="https://github.com/adtention-ai/codex/releases/latest/download/$asset"
+  else
+    url="https://github.com/adtention-ai/codex/releases/download/$release_version/$asset"
+  fi
+
+  tmp="$plugin_root/bin/$asset.download"
+  rm -f "$tmp"
+  if command -v curl >/dev/null 2>&1; then
+    curl -fsSL "$url" -o "$tmp" || { rm -f "$tmp"; return 1; }
+  elif command -v wget >/dev/null 2>&1; then
+    wget -qO "$tmp" "$url" || { rm -f "$tmp"; return 1; }
+  else
+    return 1
+  fi
+  mv "$tmp" "$plugin_root/bin/$asset"
+  chmod +x "$plugin_root/bin/$asset"
+  log "Installed prebuilt client $asset"
+}
+
 ensure_client() {
   local check_cache
   check_cache="$(mktemp -d "${TMPDIR:-/tmp}/adtention-client-check.XXXXXX")"
@@ -126,87 +204,17 @@ install_shell_integration() {
   HOME="$home_dir" ADTENTION_PLUGIN_ROOT="$plugin_root" ADTENTION_CACHE="$shared_cache" "$plugin_root/scripts/install-shell-integration.sh" >/dev/null
 }
 
-install_macos_helper() {
-  local launch_dir="$home_dir/Library/LaunchAgents"
-  local plist="$launch_dir/ai.adtention.codex.viewability.plist"
-  mkdir -p "$launch_dir"
-  cat > "$plist" <<EOF
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-  <key>Label</key>
-  <string>ai.adtention.codex.viewability</string>
-  <key>ProgramArguments</key>
-  <array>
-    <string>$client_bin</string>
-    <string>viewability-daemon</string>
-    <string>Codex</string>
-  </array>
-  <key>EnvironmentVariables</key>
-  <dict>
-    <key>ADTENTION_CACHE</key>
-    <string>$shared_cache</string>
-  </dict>
-  <key>RunAtLoad</key>
-  <true/>
-  <key>KeepAlive</key>
-  <true/>
-  <key>StandardOutPath</key>
-  <string>$home_dir/.codex/adtention/viewability.log</string>
-  <key>StandardErrorPath</key>
-  <string>$home_dir/.codex/adtention/viewability.err.log</string>
-</dict>
-</plist>
-EOF
-  if [ "${ADTENTION_NO_START_SERVICE:-0}" != "1" ] && command -v launchctl >/dev/null 2>&1; then
-    launchctl bootout "gui/$(id -u)" "$plist" >/dev/null 2>&1 || true
-    launchctl bootstrap "gui/$(id -u)" "$plist" >/dev/null 2>&1 || true
-  fi
-}
-
-install_linux_helper() {
-  local service_dir="$home_dir/.config/systemd/user"
-  local service="$service_dir/adtention-codex-viewability.service"
-  mkdir -p "$service_dir"
-  cat > "$service" <<EOF
-[Unit]
-Description=ADtention Codex viewability helper
-
-[Service]
-Environment=ADTENTION_CACHE=$shared_cache
-ExecStart=$client_bin viewability-daemon Codex
-Restart=always
-RestartSec=5
-
-[Install]
-WantedBy=default.target
-EOF
-  if [ "${ADTENTION_NO_START_SERVICE:-0}" != "1" ] && command -v systemctl >/dev/null 2>&1; then
-    systemctl --user daemon-reload >/dev/null 2>&1 || true
-    systemctl --user enable --now adtention-codex-viewability.service >/dev/null 2>&1 || true
-  fi
-}
-
-install_viewability_helper() {
-  case "$os_name" in
-    Darwin) install_macos_helper ;;
-    Linux) install_linux_helper ;;
-    *)
-      log "No Unix helper installer for OS '$os_name'. Windows uses install.ps1."
-      ;;
-  esac
-}
-
 main() {
+  parse_args "$@"
   discover_source_root
   fetch_source_if_needed
   sync_to_install_root
   mkdir -p "$shared_cache"
+  write_ref_code
+  download_release_binary || true
   ensure_client
   install_codex_plugin
   install_shell_integration
-  install_viewability_helper
   "$client_bin" setup >/dev/null 2>&1 || true
   log "Installed ADtention for Codex."
 }

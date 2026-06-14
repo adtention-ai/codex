@@ -58,8 +58,28 @@ test_installer_is_idempotent() {
   [[ "$bash_count" -eq 2 ]] || fail ".bashrc marker count expected 2, got $bash_count"
 }
 
+test_open_function_invokes_client() {
+  local plugin_root="$tmp/plugin"
+  local log="$tmp/open.log"
+  mkdir -p "$plugin_root/bin"
+  cat > "$plugin_root/bin/adtention-codex" <<SH
+#!/usr/bin/env bash
+printf '%s\\n' "\$*" >> "$log"
+SH
+  chmod +x "$plugin_root/bin/adtention-codex"
+
+  export ADTENTION_PLUGIN_ROOT="$plugin_root"
+  export ADTENTION_DISABLE_TITLE_DAEMON=1
+  # shellcheck disable=SC1091
+  source "$root/scripts/shell-integration.sh"
+  adtention-open "https://example.com/sponsor"
+
+  grep -q 'open https://example.com/sponsor' "$log" || fail "adtention-open did not invoke client open command"
+}
+
 test_prompt_function_marks_display
 test_prompt_marks_display_when_title_daemon_is_enabled
 test_installer_is_idempotent
+test_open_function_invokes_client
 
 printf 'shell integration tests passed\n'

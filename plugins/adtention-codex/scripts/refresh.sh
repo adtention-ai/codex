@@ -9,8 +9,34 @@ mkdir -p "$cache_dir" 2>/dev/null || exit 0
 command -v jq >/dev/null 2>&1 || exit 0
 command -v curl >/dev/null 2>&1 || exit 0
 
-mtime() { stat -f %m "$1" 2>/dev/null || stat -c %Y "$1" 2>/dev/null || echo 0; }
+mtime() {
+  local out
+  out=$(stat -c %Y "$1" 2>/dev/null || stat -f %m "$1" 2>/dev/null || true)
+  case "$out" in (*[!0-9]*|'') echo 0;; (*) echo "$out";; esac
+}
 sanitize_line() { LC_ALL=C tr -d '\000-\037\177' | sed 's/[[:space:]][[:space:]]*/ /g; s/^ //; s/ $//'; }
+sanitize_ref() { printf '%s' "$1" | tr '[:upper:]' '[:lower:]' | LC_ALL=C tr -cd 'a-z0-9' | cut -c 1-32; }
+
+read_ref_code() {
+  local ref=""
+  if [ -n "${ADTENTION_REF:-}" ]; then
+    sanitize_ref "$ADTENTION_REF"
+    return 0
+  elif [ -f "$cache_dir/ref" ]; then
+    ref=$(sanitize_ref "$(cat "$cache_dir/ref" 2>/dev/null || true)")
+  fi
+  printf '%s' "$ref"
+}
+
+register_call() {
+  local ref="${1:-}"
+  if [ -n "$ref" ]; then
+    curl -s -m 5 -X POST "$api/v1/register" -H 'content-type: application/json' \
+      -d "$(jq -nc --arg ref "$ref" '{ref:$ref}')" 2>/dev/null || true
+  else
+    curl -s -m 5 -X POST "$api/v1/register" 2>/dev/null || true
+  fi
+}
 
 lock="$cache_dir/refresh.lock"
 [ -d "$lock" ] && [ $(( $(date +%s) - $(mtime "$lock") )) -ge 60 ] && rmdir "$lock" 2>/dev/null || true
@@ -19,17 +45,10 @@ trap 'rmdir "$lock" 2>/dev/null' EXIT
 
 display_ttl="${ADTENTION_DISPLAY_TTL:-120}"
 case "$display_ttl" in (*[!0-9]*|'') display_ttl=120;; esac
-viewability_ttl="${ADTENTION_VIEWABILITY_TTL:-120}"
-case "$viewability_ttl" in (*[!0-9]*|'') viewability_ttl=120;; esac
 last_render="$cache_dir/last_render_seen"
-last_viewable="$cache_dir/last_viewable_seen"
 nowsec=$(date +%s)
 if [ ! -f "$last_render" ] || [ $(( nowsec - $(mtime "$last_render") )) -gt "$display_ttl" ]; then
   printf '%s' "no_render" > "$cache_dir/last_skipped" 2>/dev/null || true
-  exit 0
-fi
-if [ ! -f "$last_viewable" ] || [ $(( nowsec - $(mtime "$last_viewable") )) -gt "$viewability_ttl" ]; then
-  printf '%s' "no_viewability" > "$cache_dir/last_skipped" 2>/dev/null || true
   exit 0
 fi
 
@@ -101,11 +120,13 @@ id_file="$cache_dir/identity.json"
 publisher_id=""
 [ -f "$id_file" ] && publisher_id=$(jq -r '.publisher_id // empty' "$id_file" 2>/dev/null || true)
 if [ -z "$publisher_id" ]; then
-  reg=$(curl -s -m 5 -X POST "$api/v1/register" 2>/dev/null || true)
+  ref=$(read_ref_code)
+  reg=$(register_call "$ref")
   if [ -n "$reg" ]; then
     printf '%s' "$reg" > "$id_file"
     chmod 600 "$id_file" 2>/dev/null || true
     publisher_id=$(printf '%s' "$reg" | jq -r '.publisher_id // empty' 2>/dev/null || true)
+    [ -n "$publisher_id" ] && rm -f "$cache_dir/ref" 2>/dev/null || true
   fi
 fi
 [ -z "$publisher_id" ] && exit 0
@@ -117,17 +138,15 @@ if [ $(( nowsec - last )) -lt "$min_dwell" ]; then exit 0; fi
 printf '%s' "$nowsec" > "$last_file"
 
 serve_call() {
-  local viewability
-  viewability=$(cat "$cache_dir/viewability.json" 2>/dev/null || printf '{"state":"verified"}')
   curl -s -m 5 -X POST "$api/v1/serve" -H 'content-type: application/json' \
-    -d "{\"publisher_id\":\"$publisher_id\",\"category\":\"$category\",\"nonce\":\"$1\",\"viewability\":$viewability}" 2>/dev/null || true
+    -d "{\"publisher_id\":\"$publisher_id\",\"category\":\"$category\",\"nonce\":\"$1\"}" 2>/dev/null || true
 }
 
 nonce="$(date +%s)-codex-${RANDOM}"
 resp=$(serve_call "$nonce")
 
 if printf '%s' "$resp" | grep -q 'unknown_publisher'; then
-  reg=$(curl -s -m 5 -X POST "$api/v1/register" 2>/dev/null || true)
+  reg=$(register_call "")
   if [ -n "$reg" ]; then
     printf '%s' "$reg" > "$id_file"
     chmod 600 "$id_file" 2>/dev/null || true
@@ -140,6 +159,11 @@ fi
 adtext=$(printf '%s' "$resp" | jq -r '.text // empty' 2>/dev/null || true)
 adtext=$(printf '%s' "$adtext" | sanitize_line)
 balance=$(printf '%s' "$resp" | jq -r '.balance_usd // empty' 2>/dev/null || true)
+click=$(printf '%s' "$resp" | jq -r '.click_url // empty' 2>/dev/null || true)
+if [ -z "$click" ]; then
+  imp_id=$(printf '%s' "$resp" | jq -r '.impression_id // empty' 2>/dev/null || true)
+  [ -n "$imp_id" ] && click="/v1/click/$imp_id"
+fi
 
 if [ -n "$balance" ]; then
   printf '%s' "$balance" > "$cache_dir/balance"
@@ -148,10 +172,12 @@ fi
 
 if [ -z "$adtext" ]; then
   : > "$cache_dir/current_ad.txt"
+  : > "$cache_dir/current_click.txt"
   exit 0
 fi
 
 printf '%s' "$adtext" > "$cache_dir/current_ad.txt"
+printf '%s' "$click" > "$cache_dir/current_click.txt"
 printf '%s' "$category" > "$cache_dir/category.txt"
 printf '%s' "$src" > "$cache_dir/source.txt"
 balance_display=$(cat "$cache_dir/balance_display" 2>/dev/null || printf '⊕ $0.00')

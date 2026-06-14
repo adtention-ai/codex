@@ -46,6 +46,17 @@ __adtention_codex_start_title_daemon() {
   [ "${ADTENTION_TITLE_DAEMON:-1}" = "0" ] && return 0
   [ -n "${ADTENTION_CODEX_TITLE_DAEMON_STARTED:-}" ] && return 0
 
+  local bin
+  bin="$(__adtention_codex_find_bin)" || return 0
+  export ADTENTION_CODEX_TITLE_DAEMON_STARTED=1
+  if [ -w /dev/tty ]; then
+    "$bin" title-daemon >/dev/tty 2>/dev/null &
+  else
+    "$bin" title-daemon >/dev/null 2>/dev/null &
+  fi
+}
+
+__adtention_codex_find_bin() {
   local root bin
   root="${ADTENTION_PLUGIN_ROOT:-}"
   for bin in \
@@ -56,14 +67,19 @@ __adtention_codex_start_title_daemon() {
   do
     [ -n "$bin" ] || continue
     [ -x "$bin" ] || continue
-    export ADTENTION_CODEX_TITLE_DAEMON_STARTED=1
-    if [ -w /dev/tty ]; then
-      "$bin" title-daemon >/dev/tty 2>/dev/null &
-    else
-      "$bin" title-daemon >/dev/null 2>/dev/null &
-    fi
+    printf '%s\n' "$bin"
     return 0
   done
+  return 1
+}
+
+adtention-open() {
+  local bin
+  if ! bin="$(__adtention_codex_find_bin)"; then
+    printf '%s\n' "adtention: client binary not found." >&2
+    return 1
+  fi
+  "$bin" open "$@"
 }
 
 __adtention_codex_install_prompt_hook() {

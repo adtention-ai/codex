@@ -1,4 +1,5 @@
 use serde_json::{json, Value};
+use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -7,22 +8,6 @@ use std::time::{SystemTime, UNIX_EPOCH};
 pub struct RenderedAd {
     pub title: String,
     pub prompt_line: String,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct ViewabilitySample {
-    pub target_app: String,
-    pub foreground_app: Option<String>,
-    pub window_visible: bool,
-    pub not_minimized: bool,
-    pub visible_ratio: f64,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub enum ViewabilityDecision {
-    Verified { source: String, visible_ratio: f64 },
-    Unverified { source: String, reason: String },
-    Unavailable { source: String, reason: String },
 }
 
 pub trait HttpClient {
@@ -37,7 +22,6 @@ pub struct RefreshConfig {
     pub transcript_path: Option<PathBuf>,
     pub hook_input: String,
     pub display_ttl_secs: u64,
-    pub viewability_ttl_secs: u64,
     pub min_dwell_secs: u64,
     pub now: SystemTime,
 }
@@ -45,7 +29,6 @@ pub struct RefreshConfig {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RefreshOutcome {
     SkippedNoRender,
-    SkippedNoViewability,
     SkippedDwell,
     NoPublisher,
     NoAd,
@@ -113,145 +96,61 @@ pub fn mark_render_seen(cache_dir: &Path, now: SystemTime) -> std::io::Result<()
     )
 }
 
-pub fn mark_viewable_seen(cache_dir: &Path, source: &str, now: SystemTime) -> std::io::Result<()> {
-    fs::create_dir_all(cache_dir)?;
-    fs::write(
-        cache_dir.join("last_viewable_seen"),
-        unix_secs(now).to_string(),
-    )?;
-    fs::write(
-        cache_dir.join("viewability.json"),
-        json!({
-            "source": strip_terminal_controls(source),
-            "verified_at": unix_secs(now),
-            "state": "verified"
+pub fn click_url_from_response(value: &Value) -> Option<String> {
+    value
+        .get("click_url")
+        .and_then(Value::as_str)
+        .filter(|url| !url.trim().is_empty())
+        .map(|url| url.trim().to_string())
+        .or_else(|| {
+            value
+                .get("impression_id")
+                .and_then(Value::as_str)
+                .filter(|id| !id.trim().is_empty())
+                .map(|id| format!("/v1/click/{}", strip_terminal_controls(id.trim())))
         })
-        .to_string(),
-    )
 }
 
-pub fn write_viewability_decision(
-    cache_dir: &Path,
-    decision: &ViewabilityDecision,
-    now: SystemTime,
-) -> std::io::Result<bool> {
-    match decision {
-        ViewabilityDecision::Verified {
-            source,
-            visible_ratio,
-        } => {
-            fs::create_dir_all(cache_dir)?;
-            fs::write(
-                cache_dir.join("last_viewable_seen"),
-                unix_secs(now).to_string(),
-            )?;
-            fs::write(
-                cache_dir.join("viewability.json"),
-                json!({
-                    "source": strip_terminal_controls(source),
-                    "verified_at": unix_secs(now),
-                    "state": "verified",
-                    "visible_ratio": visible_ratio
-                })
-                .to_string(),
-            )?;
-            Ok(true)
-        }
-        ViewabilityDecision::Unverified { source, reason }
-        | ViewabilityDecision::Unavailable { source, reason } => {
-            fs::create_dir_all(cache_dir)?;
-            match fs::remove_file(cache_dir.join("last_viewable_seen")) {
-                Ok(()) => {}
-                Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
-                Err(err) => return Err(err),
+pub fn resolve_open_url(input: &str, api_base: &str) -> Option<String> {
+    let input = input.trim();
+    if input.starts_with("https://") || input.starts_with("http://") {
+        return Some(strip_terminal_controls(input));
+    }
+    if input.starts_with('/') && !input.starts_with("//") {
+        return Some(format!(
+            "{}{}",
+            api_base.trim_end_matches('/'),
+            strip_terminal_controls(input)
+        ));
+    }
+    None
+}
+
+pub fn sanitize_ref_code(input: &str) -> String {
+    let mut out = String::new();
+    for ch in input.chars().flat_map(char::to_lowercase) {
+        if ch.is_ascii_lowercase() || ch.is_ascii_digit() {
+            out.push(ch);
+            if out.len() >= 32 {
+                break;
             }
-            fs::write(
-                cache_dir.join("viewability.json"),
-                json!({
-                    "source": strip_terminal_controls(source),
-                    "checked_at": unix_secs(now),
-                    "state": match decision {
-                        ViewabilityDecision::Unverified { .. } => "unverified",
-                        _ => "unavailable",
-                    },
-                    "reason": strip_terminal_controls(reason)
-                })
-                .to_string(),
-            )?;
-            Ok(false)
         }
     }
+    out
 }
 
-pub fn evaluate_viewability(
-    sample: &ViewabilitySample,
-    source: &str,
-    min_visible_ratio: f64,
-) -> ViewabilityDecision {
-    let normalized_target = sample.target_app.to_lowercase();
-    let foreground = sample
-        .foreground_app
-        .as_deref()
-        .unwrap_or("")
-        .to_lowercase();
-    if foreground.is_empty() {
-        return ViewabilityDecision::Unavailable {
-            source: source.to_string(),
-            reason: "foreground_app_unknown".to_string(),
-        };
-    }
-    if !foreground.contains(&normalized_target) {
-        return ViewabilityDecision::Unverified {
-            source: source.to_string(),
-            reason: "target_not_foreground".to_string(),
-        };
-    }
-    if !sample.window_visible {
-        return ViewabilityDecision::Unverified {
-            source: source.to_string(),
-            reason: "window_not_visible".to_string(),
-        };
-    }
-    if !sample.not_minimized {
-        return ViewabilityDecision::Unverified {
-            source: source.to_string(),
-            reason: "window_minimized".to_string(),
-        };
-    }
-    if sample.visible_ratio < min_visible_ratio {
-        return ViewabilityDecision::Unverified {
-            source: source.to_string(),
-            reason: "visible_ratio_below_threshold".to_string(),
-        };
-    }
-    ViewabilityDecision::Verified {
-        source: source.to_string(),
-        visible_ratio: sample.visible_ratio,
-    }
+pub fn ref_code_from_values(env_ref: Option<&str>, file_ref: Option<&str>) -> Option<String> {
+    env_ref
+        .filter(|s| !s.trim().is_empty())
+        .or(file_ref)
+        .map(sanitize_ref_code)
+        .filter(|s| !s.is_empty())
 }
 
-pub fn visible_ratio_for_rect(
-    window_x: f64,
-    window_y: f64,
-    window_width: f64,
-    window_height: f64,
-    screen_x: f64,
-    screen_y: f64,
-    screen_width: f64,
-    screen_height: f64,
-) -> f64 {
-    if window_width <= 0.0 || window_height <= 0.0 || screen_width <= 0.0 || screen_height <= 0.0 {
-        return 0.0;
-    }
-
-    let window_right = window_x + window_width;
-    let window_bottom = window_y + window_height;
-    let screen_right = screen_x + screen_width;
-    let screen_bottom = screen_y + screen_height;
-    let visible_width = (window_right.min(screen_right) - window_x.max(screen_x)).max(0.0);
-    let visible_height = (window_bottom.min(screen_bottom) - window_y.max(screen_y)).max(0.0);
-    let ratio = (visible_width * visible_height) / (window_width * window_height);
-    ratio.clamp(0.0, 1.0)
+pub fn read_ref_code(cache_dir: &Path) -> Option<String> {
+    let env_ref = env::var("ADTENTION_REF").ok();
+    let file_ref = fs::read_to_string(cache_dir.join("ref")).ok();
+    ref_code_from_values(env_ref.as_deref(), file_ref.as_deref())
 }
 
 pub fn mark_display_seen(cache_dir: &Path, now: SystemTime) -> std::io::Result<()> {
@@ -260,10 +159,6 @@ pub fn mark_display_seen(cache_dir: &Path, now: SystemTime) -> std::io::Result<(
 
 pub fn render_is_fresh(cache_dir: &Path, now: SystemTime, ttl_secs: u64) -> bool {
     heartbeat_is_fresh(cache_dir, "last_render_seen", now, ttl_secs)
-}
-
-pub fn viewable_is_fresh(cache_dir: &Path, now: SystemTime, ttl_secs: u64) -> bool {
-    heartbeat_is_fresh(cache_dir, "last_viewable_seen", now, ttl_secs)
 }
 
 pub fn display_is_fresh(cache_dir: &Path, now: SystemTime, ttl_secs: u64) -> bool {
@@ -286,13 +181,9 @@ pub fn should_attempt_serve(
     cache_dir: &Path,
     now: SystemTime,
     render_ttl_secs: u64,
-    viewability_ttl_secs: u64,
     min_dwell_secs: u64,
 ) -> bool {
     if !render_is_fresh(cache_dir, now, render_ttl_secs) {
-        return false;
-    }
-    if !viewable_is_fresh(cache_dir, now, viewability_ttl_secs) {
         return false;
     }
 
@@ -314,16 +205,10 @@ pub fn refresh_once<C: HttpClient>(config: &RefreshConfig, client: &C) -> Refres
         return RefreshOutcome::SkippedNoRender;
     }
 
-    if !viewable_is_fresh(&config.cache_dir, config.now, config.viewability_ttl_secs) {
-        let _ = fs::write(config.cache_dir.join("last_skipped"), "no_viewability");
-        return RefreshOutcome::SkippedNoViewability;
-    }
-
     if !should_attempt_serve(
         &config.cache_dir,
         config.now,
         config.display_ttl_secs,
-        config.viewability_ttl_secs,
         config.min_dwell_secs,
     ) {
         let _ = fs::write(config.cache_dir.join("last_skipped"), "dwell");
@@ -333,13 +218,14 @@ pub fn refresh_once<C: HttpClient>(config: &RefreshConfig, client: &C) -> Refres
     let (category, source) = classify(config);
     let mut publisher_id = read_publisher_id(&config.cache_dir);
     if publisher_id.is_none() {
-        match client.post(
-            &format!("{}/v1/register", config.api_base.trim_end_matches('/')),
-            None,
-        ) {
+        let ref_code = read_ref_code(&config.cache_dir);
+        match register(config, client, ref_code.as_deref()) {
             Ok(body) => {
                 let _ = fs::write(config.cache_dir.join("identity.json"), &body);
                 publisher_id = publisher_id_from_json(&body);
+                if publisher_id.is_some() {
+                    let _ = fs::remove_file(config.cache_dir.join("ref"));
+                }
             }
             Err(_) => return RefreshOutcome::NoPublisher,
         }
@@ -357,10 +243,7 @@ pub fn refresh_once<C: HttpClient>(config: &RefreshConfig, client: &C) -> Refres
         .unwrap_or_default()
         .contains("unknown_publisher")
     {
-        match client.post(
-            &format!("{}/v1/register", config.api_base.trim_end_matches('/')),
-            None,
-        ) {
+        match register(config, client, None) {
             Ok(body) => {
                 let _ = fs::write(config.cache_dir.join("identity.json"), &body);
                 if let Some(id) = publisher_id_from_json(&body) {
@@ -387,6 +270,7 @@ pub fn refresh_once<C: HttpClient>(config: &RefreshConfig, client: &C) -> Refres
 
     if ad_text.is_empty() {
         let _ = fs::write(config.cache_dir.join("current_ad.txt"), "");
+        let _ = fs::write(config.cache_dir.join("current_click.txt"), "");
         return RefreshOutcome::NoAd;
     }
 
@@ -395,6 +279,8 @@ pub fn refresh_once<C: HttpClient>(config: &RefreshConfig, client: &C) -> Refres
     let rendered = render_ad(&balance_display, Some(&ad_text), 80, 160);
 
     let _ = fs::write(config.cache_dir.join("current_ad.txt"), &ad_text);
+    let click_url = click_url_from_response(&value).unwrap_or_default();
+    let _ = fs::write(config.cache_dir.join("current_click.txt"), click_url);
     let _ = fs::write(config.cache_dir.join("category.txt"), &category);
     let _ = fs::write(config.cache_dir.join("source.txt"), &source);
     let _ = fs::write(config.cache_dir.join("title.txt"), rendered.title);
@@ -415,6 +301,18 @@ pub fn refresh_once<C: HttpClient>(config: &RefreshConfig, client: &C) -> Refres
     RefreshOutcome::Served { category, ad_text }
 }
 
+fn register<C: HttpClient>(
+    config: &RefreshConfig,
+    client: &C,
+    ref_code: Option<&str>,
+) -> Result<String, String> {
+    let body = ref_code.map(|ref_code| json!({ "ref": ref_code }).to_string());
+    client.post(
+        &format!("{}/v1/register", config.api_base.trim_end_matches('/')),
+        body.as_deref(),
+    )
+}
+
 fn serve<C: HttpClient>(
     config: &RefreshConfig,
     client: &C,
@@ -424,16 +322,10 @@ fn serve<C: HttpClient>(
     nonce_suffix: &str,
 ) -> Option<String> {
     let nonce = format!("{now_secs}-codex{nonce_suffix}");
-    let viewability = fs::read_to_string(config.cache_dir.join("viewability.json")).ok();
-    let viewability_value = viewability
-        .as_deref()
-        .and_then(|body| serde_json::from_str::<Value>(body).ok())
-        .unwrap_or_else(|| json!({"state":"verified"}));
     let body = json!({
         "publisher_id": publisher_id,
         "category": category,
-        "nonce": nonce,
-        "viewability": viewability_value,
+        "nonce": nonce
     })
     .to_string();
     client
@@ -715,18 +607,18 @@ mod tests {
     use super::*;
     use std::fs;
     use std::path::PathBuf;
+    use std::sync::atomic::{AtomicU64, Ordering};
     use std::sync::Mutex;
     use std::time::{Duration, UNIX_EPOCH};
+
+    static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
     fn temp_dir() -> PathBuf {
         let mut dir = std::env::temp_dir();
         dir.push(format!(
             "adtention-codex-test-{}-{}",
             std::process::id(),
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
+            TEMP_COUNTER.fetch_add(1, Ordering::SeqCst)
         ));
         fs::create_dir_all(&dir).unwrap();
         dir
@@ -765,22 +657,6 @@ mod tests {
     }
 
     #[test]
-    fn render_and_viewability_heartbeats_are_separate() {
-        let tmp = temp_dir();
-        let now = SystemTime::now();
-
-        assert!(!render_is_fresh(&tmp, now, 30));
-        assert!(!viewable_is_fresh(&tmp, now, 30));
-
-        mark_render_seen(&tmp, now).unwrap();
-        assert!(render_is_fresh(&tmp, SystemTime::now(), 30));
-        assert!(!viewable_is_fresh(&tmp, SystemTime::now(), 30));
-
-        mark_viewable_seen(&tmp, "test-helper", now).unwrap();
-        assert!(viewable_is_fresh(&tmp, SystemTime::now(), 30));
-    }
-
-    #[test]
     fn render_heartbeat_records_supplied_time() {
         let tmp = temp_dir();
         let now = UNIX_EPOCH + Duration::from_secs(1_234);
@@ -794,25 +670,81 @@ mod tests {
     }
 
     #[test]
-    fn serve_is_blocked_without_fresh_viewability() {
-        let tmp = temp_dir();
-        let now = UNIX_EPOCH + Duration::from_secs(1_000);
+    fn click_url_prefers_server_url_and_falls_back_to_click_route() {
+        let with_click = serde_json::json!({
+            "text": "Sponsor",
+            "click_url": "https://example.com/click"
+        });
+        assert_eq!(
+            click_url_from_response(&with_click).as_deref(),
+            Some("https://example.com/click")
+        );
 
-        assert!(!should_attempt_serve(&tmp, now, 120, 120, 15));
-
-        mark_render_seen(&tmp, SystemTime::now()).unwrap();
-        assert!(!should_attempt_serve(&tmp, SystemTime::now(), 120, 120, 15));
+        let with_impression = serde_json::json!({
+            "text": "Sponsor",
+            "impression_id": "imp_123"
+        });
+        assert_eq!(
+            click_url_from_response(&with_impression).as_deref(),
+            Some("/v1/click/imp_123")
+        );
     }
 
     #[test]
-    fn serve_is_allowed_with_fresh_render_viewability_and_dwell_elapsed() {
+    fn resolve_open_url_accepts_http_and_relative_click_paths_only() {
+        assert_eq!(
+            resolve_open_url("https://example.com", "https://api.adtention.ai").as_deref(),
+            Some("https://example.com")
+        );
+        assert_eq!(
+            resolve_open_url("/v1/click/imp_123", "https://api.adtention.ai/").as_deref(),
+            Some("https://api.adtention.ai/v1/click/imp_123")
+        );
+        assert_eq!(
+            resolve_open_url("javascript:alert(1)", "https://api.adtention.ai"),
+            None
+        );
+        assert_eq!(
+            resolve_open_url("//example.com", "https://api.adtention.ai"),
+            None
+        );
+    }
+
+    #[test]
+    fn referral_codes_are_sanitized_and_env_takes_precedence() {
+        assert_eq!(sanitize_ref_code("ABC-123_!!"), "abc123");
+        assert_eq!(
+            sanitize_ref_code("abcdefghijklmnopqrstuvwxyz1234567890"),
+            "abcdefghijklmnopqrstuvwxyz123456"
+        );
+        assert_eq!(
+            ref_code_from_values(Some("ENV-1"), Some("file-2")).as_deref(),
+            Some("env1")
+        );
+        assert_eq!(
+            ref_code_from_values(None, Some("file-2")).as_deref(),
+            Some("file2")
+        );
+        assert_eq!(ref_code_from_values(Some("!!!"), Some("file-2")), None);
+    }
+
+    #[test]
+    fn serve_is_blocked_without_fresh_render() {
+        let tmp = temp_dir();
+        let now = UNIX_EPOCH + Duration::from_secs(1_000);
+
+        assert!(!should_attempt_serve(&tmp, now, 120, 15));
+    }
+
+    #[test]
+    fn serve_is_allowed_with_fresh_render_and_dwell_elapsed() {
         let tmp = temp_dir();
         let now = SystemTime::now();
+
         mark_render_seen(&tmp, now).unwrap();
-        mark_viewable_seen(&tmp, "test-helper", now).unwrap();
         fs::write(tmp.join("last_serve"), "0").unwrap();
 
-        assert!(should_attempt_serve(&tmp, SystemTime::now(), 120, 120, 15));
+        assert!(should_attempt_serve(&tmp, SystemTime::now(), 120, 15));
     }
 
     #[test]
@@ -820,114 +752,10 @@ mod tests {
         let tmp = temp_dir();
         let now = SystemTime::now();
         mark_render_seen(&tmp, now).unwrap();
-        mark_viewable_seen(&tmp, "test-helper", now).unwrap();
         let now_secs = now.duration_since(UNIX_EPOCH).unwrap().as_secs();
         fs::write(tmp.join("last_serve"), now_secs.to_string()).unwrap();
 
-        assert!(!should_attempt_serve(&tmp, SystemTime::now(), 120, 120, 15));
-    }
-
-    #[test]
-    fn viewability_evaluation_requires_foreground_visible_window() {
-        let sample = ViewabilitySample {
-            target_app: "Codex".to_string(),
-            foreground_app: Some("Codex".to_string()),
-            window_visible: true,
-            not_minimized: true,
-            visible_ratio: 0.81,
-        };
-
-        assert_eq!(
-            evaluate_viewability(&sample, "test-helper", 0.5),
-            ViewabilityDecision::Verified {
-                source: "test-helper".to_string(),
-                visible_ratio: 0.81
-            }
-        );
-
-        let wrong_app = ViewabilitySample {
-            foreground_app: Some("Safari".to_string()),
-            ..sample.clone()
-        };
-        assert!(matches!(
-            evaluate_viewability(&wrong_app, "test-helper", 0.5),
-            ViewabilityDecision::Unverified { reason, .. } if reason == "target_not_foreground"
-        ));
-
-        let hidden = ViewabilitySample {
-            window_visible: false,
-            ..sample.clone()
-        };
-        assert!(matches!(
-            evaluate_viewability(&hidden, "test-helper", 0.5),
-            ViewabilityDecision::Unverified { reason, .. } if reason == "window_not_visible"
-        ));
-
-        let too_small = ViewabilitySample {
-            visible_ratio: 0.12,
-            ..sample
-        };
-        assert!(matches!(
-            evaluate_viewability(&too_small, "test-helper", 0.5),
-            ViewabilityDecision::Unverified { reason, .. } if reason == "visible_ratio_below_threshold"
-        ));
-    }
-
-    #[test]
-    fn visible_ratio_uses_window_screen_intersection() {
-        assert_eq!(
-            visible_ratio_for_rect(0.0, 0.0, 100.0, 100.0, 0.0, 0.0, 200.0, 200.0),
-            1.0
-        );
-        assert_eq!(
-            visible_ratio_for_rect(50.0, 0.0, 100.0, 100.0, 0.0, 0.0, 100.0, 100.0),
-            0.5
-        );
-        assert_eq!(
-            visible_ratio_for_rect(200.0, 200.0, 100.0, 100.0, 0.0, 0.0, 100.0, 100.0),
-            0.0
-        );
-    }
-
-    #[test]
-    fn only_verified_viewability_writes_billable_heartbeat() {
-        let tmp = temp_dir();
-        let now = SystemTime::now();
-        let unavailable = ViewabilityDecision::Unavailable {
-            source: "test-helper".to_string(),
-            reason: "unsupported_session".to_string(),
-        };
-        assert!(!write_viewability_decision(&tmp, &unavailable, now).unwrap());
-        assert!(!tmp.join("last_viewable_seen").exists());
-
-        let verified = ViewabilityDecision::Verified {
-            source: "test-helper".to_string(),
-            visible_ratio: 0.7,
-        };
-        assert!(write_viewability_decision(&tmp, &verified, now).unwrap());
-        assert!(tmp.join("last_viewable_seen").exists());
-        let body = fs::read_to_string(tmp.join("viewability.json")).unwrap();
-        assert!(body.contains(r#""state":"verified""#));
-        assert!(body.contains(r#""visible_ratio":0.7"#));
-    }
-
-    #[test]
-    fn failed_viewability_check_clears_previous_billable_heartbeat() {
-        let tmp = temp_dir();
-        let now = SystemTime::now();
-        mark_viewable_seen(&tmp, "test-helper", now).unwrap();
-        assert!(viewable_is_fresh(&tmp, SystemTime::now(), 120));
-
-        let unverified = ViewabilityDecision::Unverified {
-            source: "test-helper".to_string(),
-            reason: "target_not_foreground".to_string(),
-        };
-        assert!(!write_viewability_decision(&tmp, &unverified, SystemTime::now()).unwrap());
-
-        assert!(!tmp.join("last_viewable_seen").exists());
-        assert!(!viewable_is_fresh(&tmp, SystemTime::now(), 120));
-        let body = fs::read_to_string(tmp.join("viewability.json")).unwrap();
-        assert!(body.contains(r#""state":"unverified""#));
+        assert!(!should_attempt_serve(&tmp, SystemTime::now(), 120, 15));
     }
 
     struct MockHttp {
@@ -966,7 +794,6 @@ mod tests {
             transcript_path: None,
             hook_input: r#"{"prompt":"Please improve this React component"}"#.to_string(),
             display_ttl_secs: 120,
-            viewability_ttl_secs: 120,
             min_dwell_secs: 15,
             now: SystemTime::now(),
         }
@@ -983,45 +810,12 @@ mod tests {
     }
 
     #[test]
-    fn refresh_skips_all_backend_calls_without_viewability_heartbeat() {
+    fn refresh_registers_and_serves_after_fresh_render() {
         let tmp = temp_dir();
         mark_render_seen(&tmp, SystemTime::now()).unwrap();
-        let http = MockHttp::new(vec![]);
-        let outcome = refresh_once(&refresh_config(tmp), &http);
-
-        assert_eq!(outcome, RefreshOutcome::SkippedNoViewability);
-        assert!(http.calls().is_empty());
-    }
-
-    #[test]
-    fn refresh_skips_backend_calls_after_viewability_becomes_unverified() {
-        let tmp = temp_dir();
-        mark_render_seen(&tmp, SystemTime::now()).unwrap();
-        mark_viewable_seen(&tmp, "test-helper", SystemTime::now()).unwrap();
-        write_viewability_decision(
-            &tmp,
-            &ViewabilityDecision::Unverified {
-                source: "test-helper".to_string(),
-                reason: "target_not_foreground".to_string(),
-            },
-            SystemTime::now(),
-        )
-        .unwrap();
-        let http = MockHttp::new(vec![]);
-        let outcome = refresh_once(&refresh_config(tmp), &http);
-
-        assert_eq!(outcome, RefreshOutcome::SkippedNoViewability);
-        assert!(http.calls().is_empty());
-    }
-
-    #[test]
-    fn refresh_registers_and_serves_after_fresh_render_and_viewability() {
-        let tmp = temp_dir();
-        mark_render_seen(&tmp, SystemTime::now()).unwrap();
-        mark_viewable_seen(&tmp, "test-helper", SystemTime::now()).unwrap();
         let http = MockHttp::new(vec![
             Ok(r#"{"publisher_id":"pub_123"}"#.to_string()),
-            Ok(r#"{"text":"Neon Postgres for AI apps","balance_usd":1.23}"#.to_string()),
+            Ok(r#"{"text":"Neon Postgres for AI apps","balance_usd":1.23,"click_url":"https://neon.tech/adtention"}"#.to_string()),
         ]);
 
         let outcome = refresh_once(&refresh_config(tmp.clone()), &http);
@@ -1038,11 +832,7 @@ mod tests {
         assert!(calls[0].0.ends_with("/v1/register"));
         assert!(calls[1].0.ends_with("/v1/serve"));
         assert!(calls[1].1.as_ref().unwrap().contains(r#""category":"web""#));
-        assert!(calls[1]
-            .1
-            .as_ref()
-            .unwrap()
-            .contains(r#""viewability":{"source":"test-helper""#));
+        assert!(!calls[1].1.as_ref().unwrap().contains("viewability"));
         assert_eq!(
             fs::read_to_string(tmp.join("title.txt")).unwrap(),
             "⊕ $1.23 · Neon Postgres for AI apps"
@@ -1055,13 +845,36 @@ mod tests {
             fs::read_to_string(tmp.join("terminal.txt")).unwrap(),
             "⊕ $1.23 · Neon Postgres for AI apps\n⊕ $1.23  Neon Postgres for AI apps\n"
         );
+        assert_eq!(
+            fs::read_to_string(tmp.join("current_click.txt")).unwrap(),
+            "https://neon.tech/adtention"
+        );
+    }
+
+    #[test]
+    fn refresh_sends_ref_on_first_registration_and_consumes_file() {
+        let tmp = temp_dir();
+        std::env::remove_var("ADTENTION_REF");
+        mark_render_seen(&tmp, SystemTime::now()).unwrap();
+        fs::write(tmp.join("ref"), "ABC-123_!!").unwrap();
+        let http = MockHttp::new(vec![
+            Ok(r#"{"publisher_id":"pub_ref"}"#.to_string()),
+            Ok(r#"{"text":"Referral sponsor","balance_usd":1.0}"#.to_string()),
+        ]);
+
+        let outcome = refresh_once(&refresh_config(tmp.clone()), &http);
+
+        assert!(matches!(outcome, RefreshOutcome::Served { .. }));
+        let calls = http.calls();
+        assert_eq!(calls[0].0, "http://127.0.0.1:9/v1/register");
+        assert_eq!(calls[0].1.as_deref(), Some(r#"{"ref":"abc123"}"#));
+        assert!(!tmp.join("ref").exists());
     }
 
     #[test]
     fn refresh_reuses_existing_publisher_id() {
         let tmp = temp_dir();
         mark_render_seen(&tmp, SystemTime::now()).unwrap();
-        mark_viewable_seen(&tmp, "test-helper", SystemTime::now()).unwrap();
         fs::write(
             tmp.join("identity.json"),
             r#"{"publisher_id":"pub_cached"}"#,
@@ -1082,5 +895,28 @@ mod tests {
             .as_ref()
             .unwrap()
             .contains(r#""publisher_id":"pub_cached""#));
+    }
+
+    #[test]
+    fn refresh_derives_click_url_from_impression_id() {
+        let tmp = temp_dir();
+        mark_render_seen(&tmp, SystemTime::now()).unwrap();
+        fs::write(
+            tmp.join("identity.json"),
+            r#"{"publisher_id":"pub_cached"}"#,
+        )
+        .unwrap();
+        let http = MockHttp::new(vec![Ok(
+            r#"{"text":"Derived click ad","balance_usd":2.0,"impression_id":"imp_456"}"#
+                .to_string(),
+        )]);
+
+        let outcome = refresh_once(&refresh_config(tmp.clone()), &http);
+
+        assert!(matches!(outcome, RefreshOutcome::Served { .. }));
+        assert_eq!(
+            fs::read_to_string(tmp.join("current_click.txt")).unwrap(),
+            "/v1/click/imp_456"
+        );
     }
 }
