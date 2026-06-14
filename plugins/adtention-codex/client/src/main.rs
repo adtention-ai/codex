@@ -146,8 +146,9 @@ fn process_is_alive(pid: u32) -> bool {
 
 #[cfg(windows)]
 fn process_is_alive(pid: u32) -> bool {
-    let script =
-        format!("if (Get-Process -Id {pid} -ErrorAction SilentlyContinue) {{ exit 0 }} else {{ exit 1 }}");
+    let script = format!(
+        "if (Get-Process -Id {pid} -ErrorAction SilentlyContinue) {{ exit 0 }} else {{ exit 1 }}"
+    );
     Command::new("powershell")
         .args(["-NoProfile", "-Command", script.as_str()])
         .status()
