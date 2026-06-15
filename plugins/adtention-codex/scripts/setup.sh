@@ -17,7 +17,12 @@ for bin in \
   "$root/client/target/debug/adtention-codex"
 do
   if [ -x "$bin" ]; then
-    "$bin" setup >/dev/null 2>&1 || true
+    ADTENTION_CACHE="$cache_dir" "$bin" setup >/dev/null 2>&1 || true
+    if [ "${ADTENTION_DISABLE_UPDATE_CHECK:-0}" != "1" ]; then
+      (
+        ADTENTION_CACHE="$cache_dir" "$bin" update --quiet >/dev/null 2>&1
+      ) &
+    fi
     break
   fi
 done

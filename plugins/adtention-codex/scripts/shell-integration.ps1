@@ -72,6 +72,15 @@ function global:adtention-open {
   Invoke-ADtentionCodexOpen @args
 }
 
+function global:adtention-update {
+  $client = Get-ADtentionCodexClient
+  if (!$client) {
+    Write-Error "adtention: client binary not found."
+    return
+  }
+  & $client update --force @args
+}
+
 function global:adtention-codex-on {
   $env:ADTENTION_DISPLAY = "1"
   Invoke-ADtentionCodexPrompt

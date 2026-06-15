@@ -13,6 +13,10 @@ pub struct RenderedAd {
 pub const LEARN_MORE_HINT: &str = "-> learn-more";
 
 pub trait HttpClient {
+    fn get(&self, _url: &str) -> Result<String, String> {
+        Err("GET is not implemented".to_string())
+    }
+
     fn post(&self, url: &str, body: Option<&str>) -> Result<String, String>;
 }
 
@@ -35,6 +39,24 @@ pub enum RefreshOutcome {
     NoPublisher,
     NoAd,
     Served { category: String, ad_text: String },
+}
+
+#[derive(Debug, Clone)]
+pub struct UpdateConfig {
+    pub cache_dir: PathBuf,
+    pub current_version: String,
+    pub latest_url: String,
+    pub ttl_secs: u64,
+    pub force: bool,
+    pub now: SystemTime,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum UpdateOutcome {
+    SkippedFresh,
+    UpToDate { latest_version: String },
+    Available { latest_version: String },
+    Unavailable,
 }
 
 pub fn strip_terminal_controls(input: &str) -> String {
@@ -227,6 +249,125 @@ pub fn should_attempt_serve(
         .unwrap_or(0);
     let now_secs = unix_secs(now);
     now_secs.saturating_sub(last_serve) >= min_dwell_secs
+}
+
+pub fn check_update_once<C: HttpClient>(config: &UpdateConfig, client: &C) -> UpdateOutcome {
+    if fs::create_dir_all(&config.cache_dir).is_err() {
+        return UpdateOutcome::Unavailable;
+    }
+
+    if !config.force
+        && heartbeat_is_fresh(
+            &config.cache_dir,
+            "last_update_check",
+            config.now,
+            config.ttl_secs,
+        )
+    {
+        return UpdateOutcome::SkippedFresh;
+    }
+
+    let now_secs = unix_secs(config.now);
+    let _ = fs::write(
+        config.cache_dir.join("last_update_check"),
+        now_secs.to_string(),
+    );
+
+    let body = match client.get(&config.latest_url) {
+        Ok(body) => body,
+        Err(err) => {
+            let _ = fs::write(config.cache_dir.join("last_update_error"), err);
+            return UpdateOutcome::Unavailable;
+        }
+    };
+
+    let Some(latest_version) = latest_version_from_body(&body) else {
+        let _ = fs::write(
+            config.cache_dir.join("last_update_error"),
+            "missing latest version",
+        );
+        return UpdateOutcome::Unavailable;
+    };
+
+    let _ = fs::write(config.cache_dir.join("latest_version"), &latest_version);
+    let _ = fs::remove_file(config.cache_dir.join("last_update_error"));
+
+    if version_is_newer(&latest_version, &config.current_version) {
+        let message = format!(
+            "ADtention Codex {latest_version} is available. Run: curl -fsSL https://raw.githubusercontent.com/adtention-ai/codex/main/install.sh | bash"
+        );
+        let _ = fs::write(config.cache_dir.join("update_available"), "1");
+        let _ = fs::write(config.cache_dir.join("update_message"), message);
+        UpdateOutcome::Available { latest_version }
+    } else {
+        let _ = fs::write(config.cache_dir.join("update_available"), "0");
+        let _ = fs::remove_file(config.cache_dir.join("update_message"));
+        UpdateOutcome::UpToDate { latest_version }
+    }
+}
+
+pub fn latest_version_from_body(body: &str) -> Option<String> {
+    serde_json::from_str::<Value>(body)
+        .ok()
+        .and_then(|value| {
+            value
+                .get("tag_name")
+                .or_else(|| value.get("name"))
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|tag| !tag.is_empty())
+                .map(str::to_string)
+        })
+        .or_else(|| {
+            let tag = body.trim();
+            if looks_like_version_tag(tag) {
+                Some(tag.to_string())
+            } else {
+                None
+            }
+        })
+}
+
+fn looks_like_version_tag(tag: &str) -> bool {
+    let tag = tag.trim().trim_start_matches('v');
+    tag.chars().next().is_some_and(|ch| ch.is_ascii_digit()) && tag.contains('.')
+}
+
+pub fn version_is_newer(latest: &str, current: &str) -> bool {
+    let Some(latest_parts) = version_parts(latest) else {
+        return false;
+    };
+    let Some(current_parts) = version_parts(current) else {
+        return false;
+    };
+    for index in 0..latest_parts.len().max(current_parts.len()) {
+        let latest_part = latest_parts.get(index).copied().unwrap_or(0);
+        let current_part = current_parts.get(index).copied().unwrap_or(0);
+        if latest_part > current_part {
+            return true;
+        }
+        if latest_part < current_part {
+            return false;
+        }
+    }
+    false
+}
+
+fn version_parts(version: &str) -> Option<Vec<u64>> {
+    let version = version.trim().trim_start_matches('v');
+    let mut parts = Vec::new();
+    for part in version.split('.') {
+        let digits: String = part.chars().take_while(|ch| ch.is_ascii_digit()).collect();
+        if digits.is_empty() {
+            return None;
+        }
+        parts.push(digits.parse().ok()?);
+    }
+    if parts.is_empty() {
+        None
+    } else {
+        Some(parts)
+    }
 }
 
 pub fn refresh_once<C: HttpClient>(config: &RefreshConfig, client: &C) -> RefreshOutcome {
@@ -827,6 +968,35 @@ mod tests {
         }
     }
 
+    struct MockUpdateHttp {
+        calls: Mutex<Vec<String>>,
+        response: Mutex<Result<String, String>>,
+    }
+
+    impl MockUpdateHttp {
+        fn new(response: Result<String, String>) -> Self {
+            Self {
+                calls: Mutex::new(Vec::new()),
+                response: Mutex::new(response),
+            }
+        }
+
+        fn calls(&self) -> Vec<String> {
+            self.calls.lock().unwrap().clone()
+        }
+    }
+
+    impl HttpClient for MockUpdateHttp {
+        fn get(&self, url: &str) -> Result<String, String> {
+            self.calls.lock().unwrap().push(url.to_string());
+            self.response.lock().unwrap().clone()
+        }
+
+        fn post(&self, _url: &str, _body: Option<&str>) -> Result<String, String> {
+            panic!("update check should not post")
+        }
+    }
+
     impl HttpClient for MockHttp {
         fn post(&self, url: &str, body: Option<&str>) -> Result<String, String> {
             self.calls
@@ -848,6 +1018,96 @@ mod tests {
             min_dwell_secs: 15,
             now: SystemTime::now(),
         }
+    }
+
+    fn update_config(cache_dir: PathBuf) -> UpdateConfig {
+        UpdateConfig {
+            cache_dir,
+            current_version: "0.1.5".to_string(),
+            latest_url: "https://example.com/latest".to_string(),
+            ttl_secs: 21_600,
+            force: false,
+            now: SystemTime::now(),
+        }
+    }
+
+    #[test]
+    fn latest_version_can_be_read_from_github_release_json_or_plain_text() {
+        assert_eq!(
+            latest_version_from_body(r#"{"tag_name":"v0.1.6"}"#).as_deref(),
+            Some("v0.1.6")
+        );
+        assert_eq!(
+            latest_version_from_body("v0.1.7").as_deref(),
+            Some("v0.1.7")
+        );
+        assert_eq!(latest_version_from_body("rate limit exceeded"), None);
+    }
+
+    #[test]
+    fn version_comparison_handles_multi_digit_patch_numbers() {
+        assert!(version_is_newer("v0.1.10", "0.1.9"));
+        assert!(!version_is_newer("v0.1.9", "0.1.10"));
+        assert!(!version_is_newer("v0.1.5", "0.1.5"));
+    }
+
+    #[test]
+    fn update_check_writes_available_state() {
+        let tmp = temp_dir();
+        let http = MockUpdateHttp::new(Ok(r#"{"tag_name":"v0.1.6"}"#.to_string()));
+
+        let outcome = check_update_once(&update_config(tmp.clone()), &http);
+
+        assert_eq!(
+            outcome,
+            UpdateOutcome::Available {
+                latest_version: "v0.1.6".to_string()
+            }
+        );
+        assert_eq!(http.calls(), vec!["https://example.com/latest".to_string()]);
+        assert_eq!(
+            fs::read_to_string(tmp.join("latest_version")).unwrap(),
+            "v0.1.6"
+        );
+        assert_eq!(
+            fs::read_to_string(tmp.join("update_available")).unwrap(),
+            "1"
+        );
+        assert!(fs::read_to_string(tmp.join("update_message"))
+            .unwrap()
+            .contains("install.sh | bash"));
+    }
+
+    #[test]
+    fn update_check_skips_recent_startup_check() {
+        let tmp = temp_dir();
+        fs::write(tmp.join("last_update_check"), "1").unwrap();
+        let http = MockUpdateHttp::new(Ok(r#"{"tag_name":"v9.9.9"}"#.to_string()));
+
+        let outcome = check_update_once(&update_config(tmp), &http);
+
+        assert_eq!(outcome, UpdateOutcome::SkippedFresh);
+        assert!(http.calls().is_empty());
+    }
+
+    #[test]
+    fn update_check_writes_up_to_date_state() {
+        let tmp = temp_dir();
+        let http = MockUpdateHttp::new(Ok(r#"{"tag_name":"v0.1.5"}"#.to_string()));
+
+        let outcome = check_update_once(&update_config(tmp.clone()), &http);
+
+        assert_eq!(
+            outcome,
+            UpdateOutcome::UpToDate {
+                latest_version: "v0.1.5".to_string()
+            }
+        );
+        assert_eq!(
+            fs::read_to_string(tmp.join("update_available")).unwrap(),
+            "0"
+        );
+        assert!(!tmp.join("update_message").exists());
     }
 
     #[test]

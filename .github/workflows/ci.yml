@@ -23,6 +23,7 @@ jobs:
           bash -n install.sh build.sh
           bash -n plugins/adtention-codex/scripts/*.sh
           bash plugins/adtention-codex/tests/shell_integration_test.sh
+          bash plugins/adtention-codex/tests/setup_shell_test.sh
           bash plugins/adtention-codex/tests/refresh_shell_test.sh
           bash plugins/adtention-codex/tests/install_test.sh
 

@@ -114,6 +114,25 @@ SH
   grep -q 'learn-more https://example.com/legacy' "$log" || fail "adtention-open did not alias to learn-more"
 }
 
+test_update_function_invokes_client() {
+  local plugin_root="$tmp/plugin-update"
+  local log="$tmp/update.log"
+  mkdir -p "$plugin_root/bin"
+  cat > "$plugin_root/bin/adtention-codex" <<SH
+#!/usr/bin/env bash
+printf '%s\\n' "\$*" >> "$log"
+SH
+  chmod +x "$plugin_root/bin/adtention-codex"
+
+  export ADTENTION_PLUGIN_ROOT="$plugin_root"
+  export ADTENTION_DISABLE_TITLE_DAEMON=1
+  # shellcheck disable=SC1091
+  source "$root/scripts/shell-integration.sh"
+  adtention-update --quiet
+
+  grep -q 'update --force --quiet' "$log" || fail "adtention-update did not invoke forced update check"
+}
+
 test_codex_wrapper_scopes_display() {
   local fake_path="$tmp/fake-path"
   local log="$tmp/codex-wrapper.log"
@@ -149,6 +168,7 @@ test_prompt_displays_inside_codex_app_terminal
 test_prompt_marks_display_when_codex_is_active
 test_installer_is_idempotent
 test_open_function_invokes_client
+test_update_function_invokes_client
 test_codex_wrapper_scopes_display
 
 printf 'shell integration tests passed\n'

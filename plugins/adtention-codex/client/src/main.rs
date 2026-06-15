@@ -1,5 +1,6 @@
 use adtention_codex::{
-    mark_render_seen, refresh_once, render_ad, resolve_open_url, HttpClient, RefreshConfig,
+    check_update_once, mark_render_seen, refresh_once, render_ad, resolve_open_url, HttpClient,
+    RefreshConfig, UpdateConfig, UpdateOutcome,
 };
 use std::env;
 use std::fs;
@@ -12,6 +13,17 @@ use std::time::{Duration, SystemTime};
 struct CurlHttp;
 
 impl HttpClient for CurlHttp {
+    fn get(&self, url: &str) -> Result<String, String> {
+        let output = Command::new("curl")
+            .args(["-s", "-m", "3", "-H", "user-agent: adtention-codex", url])
+            .output()
+            .map_err(|err| err.to_string())?;
+        if !output.status.success() {
+            return Err(format!("curl exited with {}", output.status));
+        }
+        Ok(String::from_utf8_lossy(&output.stdout).to_string())
+    }
+
     fn post(&self, url: &str, body: Option<&str>) -> Result<String, String> {
         let mut cmd = Command::new("curl");
         cmd.args(["-s", "-m", "5", "-X", "POST", url]);
@@ -54,6 +66,10 @@ fn main() {
             let target = args.next();
             open_sponsor(target).map(|_| 0).unwrap_or(1)
         }
+        "update" => {
+            let options = UpdateOptions::from_args(args.collect());
+            update(options).map(|_| 0).unwrap_or(0)
+        }
         _ => {
             eprintln!("unknown command: {command}");
             2
@@ -69,6 +85,66 @@ fn setup() -> io::Result<()> {
     write_if_missing(cache.join("title.txt"), "⊕ $0.00")?;
     write_if_missing(cache.join("prompt_line.txt"), "⊕ $0.00")?;
     write_if_missing(cache.join("terminal.txt"), "⊕ $0.00\n⊕ $0.00\n")?;
+    Ok(())
+}
+
+#[derive(Debug, Clone, Default)]
+struct UpdateOptions {
+    quiet: bool,
+    force: bool,
+}
+
+impl UpdateOptions {
+    fn from_args(args: Vec<String>) -> Self {
+        let mut options = Self::default();
+        for arg in args {
+            match arg.as_str() {
+                "--quiet" | "-q" => options.quiet = true,
+                "--force" | "-f" => options.force = true,
+                _ => {}
+            }
+        }
+        options
+    }
+}
+
+fn update(options: UpdateOptions) -> io::Result<()> {
+    let config = UpdateConfig {
+        cache_dir: cache_dir(),
+        current_version: env!("CARGO_PKG_VERSION").to_string(),
+        latest_url: env::var("ADTENTION_UPDATE_URL").unwrap_or_else(|_| {
+            "https://api.github.com/repos/adtention-ai/codex/releases/latest".to_string()
+        }),
+        ttl_secs: parse_env_u64("ADTENTION_UPDATE_TTL", 21_600),
+        force: options.force,
+        now: SystemTime::now(),
+    };
+
+    let outcome = check_update_once(&config, &CurlHttp);
+    if options.quiet {
+        return Ok(());
+    }
+
+    match outcome {
+        UpdateOutcome::Available { latest_version } => {
+            println!(
+                "adtention: update available ({latest_version}; installed v{}).",
+                env!("CARGO_PKG_VERSION")
+            );
+            println!(
+                "adtention: run: curl -fsSL https://raw.githubusercontent.com/adtention-ai/codex/main/install.sh | bash"
+            );
+        }
+        UpdateOutcome::UpToDate { latest_version } => {
+            println!("adtention: up to date ({latest_version}).");
+        }
+        UpdateOutcome::SkippedFresh => {
+            println!("adtention: update check recently completed. Use --force to check again.");
+        }
+        UpdateOutcome::Unavailable => {
+            println!("adtention: update check unavailable right now.");
+        }
+    }
     Ok(())
 }
 
@@ -245,7 +321,7 @@ fn columns() -> Option<usize> {
 
 fn print_usage_and_exit() -> ! {
     eprintln!(
-        "usage: adtention-codex <setup|refresh|render|mark-render|title-daemon|learn-more|open>"
+        "usage: adtention-codex <setup|refresh|render|mark-render|title-daemon|learn-more|open|update>"
     );
     std::process::exit(2);
 }

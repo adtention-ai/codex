@@ -118,10 +118,12 @@ a Codex safety step, not an ADtention prompt.
 - **Persistent terminal title/tab text** while Codex is active.
 - **Readable sponsor line above the prompt** when the shell prompt is visible.
 - **Learn more command**: `learn-more` opens the cached sponsor URL.
+- **Update command**: `adtention-update` checks whether a newer release exists.
 - **No terminal lock-in**: works through shell integration, not tmux/zellij.
 - **No unrelated terminal noise**: random terminals stay quiet by default.
 - **Fast prompt path**: shell builtins read one tiny cache file.
 - **Prompt-gated serving**: sponsor text changes only after real Codex input.
+- **Startup update check**: a throttled background check runs on Codex startup.
 - **One install command** for plugin and shell integration.
 
 ---
@@ -134,6 +136,8 @@ Two parts are deliberately separate:
   It writes `last_render_seen` and never calls the network.
 - **Codex prompt hook**: classifies the prompt locally, checks the render heartbeat,
   calls `/v1/serve`, and updates the cache.
+- **Startup setup hook**: initializes cache files and runs `update --quiet` in the
+  background. This only checks GitHub release metadata and does not serve ads.
 
 The shell integration is quiet unless one of these is true:
 
@@ -148,6 +152,12 @@ terminal does not keep renewing the render heartbeat forever.
 
 There is no macOS Accessibility permission, Windows scheduled task, Linux
 systemd helper, tmux requirement, or foreground-window watcher.
+
+Disable startup update checks with:
+
+```sh
+export ADTENTION_DISABLE_UPDATE_CHECK=1
+```
 
 ---
 
@@ -207,6 +217,12 @@ Open a sponsor URL directly:
 plugins/adtention-codex/bin/adtention-codex learn-more https://example.com/sponsor
 ```
 
+Check for an update:
+
+```sh
+adtention-update
+```
+
 Run tests:
 
 ```sh
@@ -215,6 +231,7 @@ cargo test
 
 cd ../../..
 bash plugins/adtention-codex/tests/shell_integration_test.sh
+bash plugins/adtention-codex/tests/setup_shell_test.sh
 bash plugins/adtention-codex/tests/install_test.sh
 bash plugins/adtention-codex/tests/refresh_shell_test.sh
 ```

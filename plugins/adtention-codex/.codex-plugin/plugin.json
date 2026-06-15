@@ -1,6 +1,6 @@
 {
   "name": "adtention-codex",
-  "version": "0.1.5",
+  "version": "0.1.6",
   "description": "ADtention hooks and terminal display for Codex sponsor messages.",
   "author": {
     "name": "ADtention"
@@ -16,7 +16,7 @@
   "interface": {
     "displayName": "ADtention for Codex",
     "shortDescription": "Show sponsor messages in the Codex app terminal and CLI title.",
-    "longDescription": "ADtention for Codex adds local lifecycle hooks, a fast Rust background client, and shell integration for Codex app terminals and scoped Codex CLI sessions. Sponsor messages are cached locally and rendered in the terminal title, plus the prompt line when the shell prompt is visible. Sponsor serving only happens after real Codex prompt activity, a fresh render heartbeat, and the minimum dwell window. Every sponsor message ends with -> learn-more, and the learn-more command opens the current sponsor URL in the browser.",
+    "longDescription": "ADtention for Codex adds local lifecycle hooks, a fast Rust background client, and shell integration for Codex app terminals and scoped Codex CLI sessions. Sponsor messages are cached locally and rendered in the terminal title, plus the prompt line when the shell prompt is visible. Sponsor serving only happens after real Codex prompt activity, a fresh render heartbeat, and the minimum dwell window. Every sponsor message ends with -> learn-more, and the learn-more command opens the current sponsor URL in the browser. Startup performs a throttled background update check against GitHub release metadata.",
     "developerName": "ADtention",
     "category": "Developer Tools",
     "capabilities": [

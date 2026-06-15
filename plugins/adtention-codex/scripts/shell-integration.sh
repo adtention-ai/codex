@@ -144,6 +144,15 @@ adtention-open() {
   learn-more "$@"
 }
 
+adtention-update() {
+  local bin
+  if ! bin="$(__adtention_codex_find_bin)"; then
+    printf '%s\n' "adtention: client binary not found." >&2
+    return 1
+  fi
+  "$bin" update --force "$@"
+}
+
 adtention-codex-on() {
   export ADTENTION_DISPLAY=1
   __adtention_codex_start_title_daemon
