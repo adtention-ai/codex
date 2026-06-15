@@ -202,20 +202,20 @@ fn open_url(url: &str) -> io::Result<()> {
 }
 
 fn cache_dir() -> PathBuf {
-    env::var_os("ADTENTION_CACHE")
+    if let Some(cache) = env::var_os("ADTENTION_CACHE").filter(|value| !value.is_empty()) {
+        return PathBuf::from(cache);
+    }
+
+    let home = env::var_os("HOME")
+        .or_else(|| env::var_os("USERPROFILE"))
         .map(PathBuf::from)
-        .unwrap_or_else(|| {
-            let home = env::var_os("HOME")
-                .or_else(|| env::var_os("USERPROFILE"))
-                .map(PathBuf::from)
-                .unwrap_or_else(|| PathBuf::from("."));
-            let claude_cache = home.join(".claude").join("adtention");
-            if claude_cache.exists() {
-                claude_cache
-            } else {
-                home.join(".adtention")
-            }
-        })
+        .unwrap_or_else(|| PathBuf::from("."));
+    let claude_cache = home.join(".claude").join("adtention");
+    if claude_cache.exists() {
+        claude_cache
+    } else {
+        home.join(".adtention")
+    }
 }
 
 fn write_if_missing(path: PathBuf, contents: &str) -> io::Result<()> {
@@ -248,4 +248,44 @@ fn print_usage_and_exit() -> ! {
         "usage: adtention-codex <setup|refresh|render|mark-render|title-daemon|learn-more|open>"
     );
     std::process::exit(2);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use std::sync::Mutex;
+
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    #[test]
+    fn cache_dir_ignores_empty_cache_override() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let old_cache = env::var_os("ADTENTION_CACHE");
+        let old_home = env::var_os("HOME");
+        let old_userprofile = env::var_os("USERPROFILE");
+
+        let mut home = env::temp_dir();
+        home.push(format!("adtention-codex-main-test-{}", std::process::id()));
+        fs::create_dir_all(&home).unwrap();
+
+        env::set_var("ADTENTION_CACHE", "");
+        env::set_var("HOME", &home);
+        env::remove_var("USERPROFILE");
+
+        assert_eq!(cache_dir(), home.join(".adtention"));
+
+        restore_env("ADTENTION_CACHE", old_cache);
+        restore_env("HOME", old_home);
+        restore_env("USERPROFILE", old_userprofile);
+        let _ = fs::remove_dir_all(home);
+    }
+
+    fn restore_env(name: &str, value: Option<std::ffi::OsString>) {
+        if let Some(value) = value {
+            env::set_var(name, value);
+        } else {
+            env::remove_var(name);
+        }
+    }
 }

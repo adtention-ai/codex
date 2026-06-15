@@ -250,7 +250,7 @@ main() {
   ensure_client
   install_codex_plugin
   install_shell_integration
-  "$client_bin" setup >/dev/null 2>&1 || true
+  ADTENTION_CACHE="$shared_cache" "$client_bin" setup >/dev/null 2>&1 || true
   log "Installed ADtention for Codex."
 }
 
