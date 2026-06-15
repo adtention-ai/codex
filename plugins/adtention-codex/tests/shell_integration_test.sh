@@ -58,6 +58,7 @@ test_prompt_displays_inside_codex_app_terminal() {
 
   [[ "$out" == *"⊕ \$5.00  App"* ]] || fail "Codex app terminal did not print prompt line"
   [[ -f "$ADTENTION_CACHE/last_render_seen" ]] || fail "Codex app terminal did not mark render heartbeat"
+  ! __adtention_codex_should_run_title_daemon || fail "Codex app terminal should not start title daemon from CODEX_SHELL alone"
   unset CODEX_SHELL
 }
 
@@ -106,9 +107,11 @@ SH
   export ADTENTION_DISABLE_TITLE_DAEMON=1
   # shellcheck disable=SC1091
   source "$root/scripts/shell-integration.sh"
-  adtention-open "https://example.com/sponsor"
+  learn-more "https://example.com/sponsor"
+  adtention-open "https://example.com/legacy"
 
-  grep -q 'open https://example.com/sponsor' "$log" || fail "adtention-open did not invoke client open command"
+  grep -q 'learn-more https://example.com/sponsor' "$log" || fail "learn-more did not invoke client learn-more command"
+  grep -q 'learn-more https://example.com/legacy' "$log" || fail "adtention-open did not alias to learn-more"
 }
 
 test_codex_wrapper_scopes_display() {

@@ -50,7 +50,7 @@ fn main() {
             let interval = parse_env_u64("ADTENTION_TITLE_INTERVAL", 15).max(5);
             title_daemon(interval).map(|_| 0).unwrap_or(0)
         }
-        "open" => {
+        "learn-more" | "open" => {
             let target = args.next();
             open_sponsor(target).map(|_| 0).unwrap_or(1)
         }
@@ -82,7 +82,7 @@ fn refresh(cwd: PathBuf, transcript_path: Option<PathBuf>) -> io::Result<()> {
         cwd,
         transcript_path,
         hook_input,
-        display_ttl_secs: parse_env_u64("ADTENTION_DISPLAY_TTL", 120),
+        display_ttl_secs: parse_env_u64("ADTENTION_DISPLAY_TTL", 30),
         min_dwell_secs: parse_env_u64("ADTENTION_MIN_DWELL", 15),
         now: SystemTime::now(),
     };
@@ -244,6 +244,8 @@ fn columns() -> Option<usize> {
 }
 
 fn print_usage_and_exit() -> ! {
-    eprintln!("usage: adtention-codex <setup|refresh|render|mark-render|title-daemon|open>");
+    eprintln!(
+        "usage: adtention-codex <setup|refresh|render|mark-render|title-daemon|learn-more|open>"
+    );
     std::process::exit(2);
 }

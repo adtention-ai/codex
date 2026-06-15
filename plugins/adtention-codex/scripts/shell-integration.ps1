@@ -61,7 +61,11 @@ function Invoke-ADtentionCodexOpen {
     Write-Error "adtention: client binary not found."
     return
   }
-  & $client open @args
+  & $client learn-more @args
+}
+
+function global:learn-more {
+  Invoke-ADtentionCodexOpen @args
 }
 
 function global:adtention-open {

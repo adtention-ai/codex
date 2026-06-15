@@ -10,6 +10,8 @@ pub struct RenderedAd {
     pub prompt_line: String,
 }
 
+pub const LEARN_MORE_HINT: &str = "-> learn-more";
+
 pub trait HttpClient {
     fn post(&self, url: &str, body: Option<&str>) -> Result<String, String>;
 }
@@ -71,14 +73,15 @@ pub fn render_ad(
     let ad = ad_text
         .map(strip_terminal_controls)
         .map(|s| normalize_space(&s))
+        .map(|s| strip_existing_learn_more_hint(&s))
         .filter(|s| !s.is_empty());
 
     let title = match ad.as_deref() {
-        Some(ad) => format!("{balance} · {ad}"),
+        Some(ad) => render_line_with_learn_more_hint(&balance, " · ", ad, max_title),
         None => balance.clone(),
     };
     let prompt_line = match ad.as_deref() {
-        Some(ad) => format!("{balance}  {ad}"),
+        Some(ad) => render_line_with_learn_more_hint(&balance, "  ", ad, max_line),
         None => balance,
     };
 
@@ -86,6 +89,37 @@ pub fn render_ad(
         title: truncate_chars(&title, max_title),
         prompt_line: truncate_chars(&prompt_line, max_line),
     }
+}
+
+fn strip_existing_learn_more_hint(ad: &str) -> String {
+    ad.trim()
+        .strip_suffix(LEARN_MORE_HINT)
+        .map(str::trim_end)
+        .unwrap_or_else(|| ad.trim())
+        .to_string()
+}
+
+fn render_line_with_learn_more_hint(
+    balance: &str,
+    separator: &str,
+    ad: &str,
+    max_chars: usize,
+) -> String {
+    if max_chars == 0 {
+        return String::new();
+    }
+
+    let prefix = format!("{balance}{separator}");
+    let suffix = format!(" {LEARN_MORE_HINT}");
+    let prefix_len = prefix.chars().count();
+    let suffix_len = suffix.chars().count();
+
+    if prefix_len + suffix_len >= max_chars {
+        return truncate_chars(&format!("{prefix}{LEARN_MORE_HINT}"), max_chars);
+    }
+
+    let ad_max = max_chars - prefix_len - suffix_len;
+    format!("{prefix}{}{suffix}", truncate_chars(ad, ad_max))
 }
 
 pub fn mark_render_seen(cache_dir: &Path, now: SystemTime) -> std::io::Result<()> {
@@ -633,19 +667,36 @@ mod tests {
             120,
         );
 
-        assert_eq!(rendered.title, "⊕ $1.23 · Neon]0;pwnedPostgres");
-        assert_eq!(rendered.prompt_line, "⊕ $1.23  Neon]0;pwnedPostgres");
+        assert_eq!(
+            rendered.title,
+            "⊕ $1.23 · Neon]0;pwnedPostgres -> learn-more"
+        );
+        assert_eq!(
+            rendered.prompt_line,
+            "⊕ $1.23  Neon]0;pwnedPostgres -> learn-more"
+        );
         assert!(!rendered.title.contains('\u{1b}'));
         assert!(!rendered.title.contains('\u{7}'));
         assert!(!rendered.title.contains('\n'));
     }
 
     #[test]
-    fn render_ad_truncates_by_characters_not_bytes() {
-        let rendered = render_ad("⊕ $1.23", Some("Déployez 🚀 maintenant"), 15, 17);
+    fn render_ad_keeps_learn_more_hint_when_truncating() {
+        let rendered = render_ad("⊕ $1.23", Some("Déployez 🚀 maintenant"), 35, 36);
 
-        assert_eq!(rendered.title, "⊕ $1.23 · Dé...");
-        assert_eq!(rendered.prompt_line, "⊕ $1.23  Déplo...");
+        assert_eq!(rendered.title, "⊕ $1.23 · Déployez... -> learn-more");
+        assert_eq!(
+            rendered.prompt_line,
+            "⊕ $1.23  Déployez 🚀... -> learn-more"
+        );
+    }
+
+    #[test]
+    fn render_ad_does_not_duplicate_learn_more_hint() {
+        let rendered = render_ad("⊕ $1.23", Some("Neon -> learn-more"), 80, 120);
+
+        assert_eq!(rendered.title, "⊕ $1.23 · Neon -> learn-more");
+        assert_eq!(rendered.prompt_line, "⊕ $1.23  Neon -> learn-more");
     }
 
     #[test]
@@ -835,15 +886,15 @@ mod tests {
         assert!(!calls[1].1.as_ref().unwrap().contains("viewability"));
         assert_eq!(
             fs::read_to_string(tmp.join("title.txt")).unwrap(),
-            "⊕ $1.23 · Neon Postgres for AI apps"
+            "⊕ $1.23 · Neon Postgres for AI apps -> learn-more"
         );
         assert_eq!(
             fs::read_to_string(tmp.join("prompt_line.txt")).unwrap(),
-            "⊕ $1.23  Neon Postgres for AI apps"
+            "⊕ $1.23  Neon Postgres for AI apps -> learn-more"
         );
         assert_eq!(
             fs::read_to_string(tmp.join("terminal.txt")).unwrap(),
-            "⊕ $1.23 · Neon Postgres for AI apps\n⊕ $1.23  Neon Postgres for AI apps\n"
+            "⊕ $1.23 · Neon Postgres for AI apps -> learn-more\n⊕ $1.23  Neon Postgres for AI apps -> learn-more\n"
         );
         assert_eq!(
             fs::read_to_string(tmp.join("current_click.txt")).unwrap(),

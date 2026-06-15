@@ -15,13 +15,24 @@ mkdir -p "$cache_dir" 2>/dev/null || true
 
 [ -z "$balance" ] && balance='⊕ $0.00'
 
+with_learn_more_hint() {
+  case "$1" in
+    *'-> learn-more') printf '%s' "$1" ;;
+    *) printf '%s -> learn-more' "$1" ;;
+  esac
+}
+
 line="$balance"
-[ -n "$ad" ] && line="$line  $ad"
+display_ad=""
+if [ -n "$ad" ]; then
+  display_ad="$(with_learn_more_hint "$ad")"
+  line="$line  $display_ad"
+fi
 
 if [ -n "$ad" ]; then
-  printf '%s · %s' "$balance" "$ad" > "$cache_dir/title.txt" 2>/dev/null || true
+  printf '%s · %s' "$balance" "$display_ad" > "$cache_dir/title.txt" 2>/dev/null || true
   printf '%s' "$line" > "$cache_dir/prompt_line.txt" 2>/dev/null || true
-  printf '%s · %s\n%s\n' "$balance" "$ad" "$line" > "$cache_dir/terminal.txt" 2>/dev/null || true
+  printf '%s · %s\n%s\n' "$balance" "$display_ad" "$line" > "$cache_dir/terminal.txt" 2>/dev/null || true
 else
   printf '%s' "$balance" > "$cache_dir/title.txt" 2>/dev/null || true
   printf '%s' "$balance" > "$cache_dir/prompt_line.txt" 2>/dev/null || true
@@ -37,7 +48,7 @@ fi
 
 if [ -t 1 ] && [ -z "${NO_COLOR:-}" ] && [ "${ADTENTION_COLOR:-1}" != "0" ]; then
   if [ -n "$ad" ]; then
-    printf '\033[1;32m%s\033[0m  \033[36m%s\033[0m\n' "$balance" "$ad"
+    printf '\033[1;32m%s\033[0m  \033[36m%s\033[0m\n' "$balance" "$display_ad"
   else
     printf '\033[1;32m%s\033[0m\n' "$balance"
   fi

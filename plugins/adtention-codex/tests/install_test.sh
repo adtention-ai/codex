@@ -13,6 +13,7 @@ fail() {
 run_install() {
   local os_name="$1"
   HOME="$tmp/home-$os_name" \
+  ADTENTION_CACHE= \
   ADTENTION_INSTALL_OS="$os_name" \
   ADTENTION_SKIP_BINARY_DOWNLOAD=1 \
   ADTENTION_SKIP_CODEX_INSTALL=1 \
@@ -43,6 +44,7 @@ SH
   chmod +x "$good_codex"
 
   HOME="$tmp/home-codex-lookup" \
+  ADTENTION_CACHE= \
   PATH="$fake_bin:$PATH" \
   ADTENTION_INSTALL_OS="Linux" \
   ADTENTION_SKIP_BINARY_DOWNLOAD=1 \
@@ -118,6 +120,7 @@ SH
   chmod +x "$fake_bin/curl"
 
   HOME="$tmp/home-download" \
+  ADTENTION_CACHE= \
   PATH="$fake_bin:$PATH" \
   ADTENTION_INSTALL_OS="Linux" \
   ADTENTION_INSTALL_ARCH="x86_64" \
@@ -136,6 +139,7 @@ test_installer_uses_claude_cache_when_present() {
   mkdir -p "$home/.claude/adtention"
 
   HOME="$home" \
+  ADTENTION_CACHE= \
   ADTENTION_INSTALL_OS="Linux" \
   ADTENTION_SKIP_BINARY_DOWNLOAD=1 \
   ADTENTION_SKIP_CODEX_INSTALL=1 \
@@ -153,6 +157,7 @@ test_installer_migrates_legacy_codex_cache() {
   printf '⊕ $4.20' > "$home/.codex/adtention/balance_display"
 
   HOME="$home" \
+  ADTENTION_CACHE= \
   ADTENTION_INSTALL_OS="Linux" \
   ADTENTION_SKIP_BINARY_DOWNLOAD=1 \
   ADTENTION_SKIP_CODEX_INSTALL=1 \

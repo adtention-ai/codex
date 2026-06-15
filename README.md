@@ -9,7 +9,7 @@ the next best supported surface: the Codex app or CLI terminal.
 It shows:
 
 ```text
-⊕ $0.42  Alchemy: APIs for every chain -> alchemy.com
+⊕ $0.42  Alchemy: APIs for every chain -> learn-more
 ```
 
 The terminal title/tab stays updated while you work, and the readable sponsor
@@ -24,14 +24,16 @@ prompt line because the shell prompt is visible there.
 Open the current sponsor with:
 
 ```sh
-adtention-open
+learn-more
 ```
 
 Or open an explicit sponsor URL:
 
 ```sh
-adtention-open https://example.com/sponsor
+learn-more https://example.com/sponsor
 ```
+
+`adtention-open` still works as a compatibility alias.
 
 ---
 
@@ -115,7 +117,7 @@ a Codex safety step, not an ADtention prompt.
 - **Scoped Codex CLI display** through a lightweight `codex` shell wrapper.
 - **Persistent terminal title/tab text** while Codex is active.
 - **Readable sponsor line above the prompt** when the shell prompt is visible.
-- **Open command**: `adtention-open` opens the cached sponsor URL.
+- **Learn more command**: `learn-more` opens the cached sponsor URL.
 - **No terminal lock-in**: works through shell integration, not tmux/zellij.
 - **No unrelated terminal noise**: random terminals stay quiet by default.
 - **Fast prompt path**: shell builtins read one tiny cache file.
@@ -138,6 +140,11 @@ The shell integration is quiet unless one of these is true:
 - the terminal is inside the Codex app (`CODEX_SHELL=1` or Codex bundle env)
 - the user is running the wrapped `codex` command
 - the user manually enables display with `adtention-codex-on`
+
+Inside the Codex app, the prompt line marks an ad as rendered when the terminal
+prompt is actually drawn. The repeating title daemon is only started for the
+wrapped external `codex` command or explicit manual enable, so a hidden Codex app
+terminal does not keep renewing the render heartbeat forever.
 
 There is no macOS Accessibility permission, Windows scheduled task, Linux
 systemd helper, tmux requirement, or foreground-window watcher.
@@ -197,7 +204,7 @@ plugins/adtention-codex/scripts/diagnose.sh
 Open a sponsor URL directly:
 
 ```sh
-plugins/adtention-codex/bin/adtention-codex open https://example.com/sponsor
+plugins/adtention-codex/bin/adtention-codex learn-more https://example.com/sponsor
 ```
 
 Run tests:

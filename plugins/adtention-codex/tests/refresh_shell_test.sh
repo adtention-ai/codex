@@ -50,6 +50,7 @@ test_refresh_serves_after_render_without_viewability() {
   grep -q '/v1/serve' "$log" || fail "refresh did not serve"
   ! grep -q 'viewability' "$log" || fail "serve payload should not include viewability"
   grep -q 'Shell fallback sponsor' "$cache/current_ad.txt" || fail "ad cache was not updated"
+  grep -q 'Shell fallback sponsor -> learn-more' "$cache/prompt_line.txt" || fail "visible prompt line did not include learn-more hint"
   grep -q 'https://example.com/shell' "$cache/current_click.txt" || fail "click cache was not updated"
   [[ ! -f "$cache/ref" ]] || fail "referral file was not consumed after registration"
 }

@@ -31,6 +31,12 @@ __adtention_codex_should_display() {
     [ "${__CFBundleIdentifier:-}" = "com.openai.codex" ]
 }
 
+__adtention_codex_should_run_title_daemon() {
+  [ "${ADTENTION_DISPLAY:-0}" = "1" ] || \
+    [ "${ADTENTION_CODEX_ACTIVE:-0}" = "1" ] || \
+    [ "${ADTENTION_CODEX_DISPLAY:-0}" = "1" ]
+}
+
 __adtention_codex_prompt() {
   __adtention_codex_should_display || return 0
 
@@ -125,13 +131,17 @@ __adtention_codex_find_bin() {
   return 1
 }
 
-adtention-open() {
+learn-more() {
   local bin
   if ! bin="$(__adtention_codex_find_bin)"; then
     printf '%s\n' "adtention: client binary not found." >&2
     return 1
   fi
-  "$bin" open "$@"
+  "$bin" learn-more "$@"
+}
+
+adtention-open() {
+  learn-more "$@"
 }
 
 adtention-codex-on() {
@@ -226,5 +236,7 @@ __adtention_codex_capture_real_codex
 __adtention_codex_install_codex_wrapper
 __adtention_codex_install_prompt_hook
 if __adtention_codex_should_display; then
-  __adtention_codex_start_title_daemon
+  if __adtention_codex_should_run_title_daemon; then
+    __adtention_codex_start_title_daemon
+  fi
 fi

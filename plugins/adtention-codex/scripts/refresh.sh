@@ -21,6 +21,12 @@ mtime() {
 }
 sanitize_line() { LC_ALL=C tr -d '\000-\037\177' | sed 's/[[:space:]][[:space:]]*/ /g; s/^ //; s/ $//'; }
 sanitize_ref() { printf '%s' "$1" | tr '[:upper:]' '[:lower:]' | LC_ALL=C tr -cd 'a-z0-9' | cut -c 1-32; }
+with_learn_more_hint() {
+  case "$1" in
+    *'-> learn-more') printf '%s' "$1" ;;
+    *) printf '%s -> learn-more' "$1" ;;
+  esac
+}
 
 read_ref_code() {
   local ref=""
@@ -48,8 +54,8 @@ lock="$cache_dir/refresh.lock"
 if ! mkdir "$lock" 2>/dev/null; then exit 0; fi
 trap 'rmdir "$lock" 2>/dev/null' EXIT
 
-display_ttl="${ADTENTION_DISPLAY_TTL:-120}"
-case "$display_ttl" in (*[!0-9]*|'') display_ttl=120;; esac
+display_ttl="${ADTENTION_DISPLAY_TTL:-30}"
+case "$display_ttl" in (*[!0-9]*|'') display_ttl=30;; esac
 last_render="$cache_dir/last_render_seen"
 nowsec=$(date +%s)
 if [ ! -f "$last_render" ] || [ $(( nowsec - $(mtime "$last_render") )) -gt "$display_ttl" ]; then
@@ -186,7 +192,8 @@ printf '%s' "$click" > "$cache_dir/current_click.txt"
 printf '%s' "$category" > "$cache_dir/category.txt"
 printf '%s' "$src" > "$cache_dir/source.txt"
 balance_display=$(cat "$cache_dir/balance_display" 2>/dev/null || printf '⊕ $0.00')
-printf '%s · %s' "$balance_display" "$adtext" > "$cache_dir/title.txt"
-printf '%s  %s' "$balance_display" "$adtext" > "$cache_dir/prompt_line.txt"
-printf '%s · %s\n%s  %s\n' "$balance_display" "$adtext" "$balance_display" "$adtext" > "$cache_dir/terminal.txt"
+display_ad="$(with_learn_more_hint "$adtext")"
+printf '%s · %s' "$balance_display" "$display_ad" > "$cache_dir/title.txt"
+printf '%s  %s' "$balance_display" "$display_ad" > "$cache_dir/prompt_line.txt"
+printf '%s · %s\n%s  %s\n' "$balance_display" "$display_ad" "$balance_display" "$display_ad" > "$cache_dir/terminal.txt"
 printf '%s\t%s\t%s\t%s\n' "$(date +%s)" "$src" "$category" "$adtext" >> "$cache_dir/impressions.log"
